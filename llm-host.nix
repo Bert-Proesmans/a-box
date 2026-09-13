@@ -256,7 +256,10 @@ in
               ];
 
               users.bert-proesmans = {
-                directories = [ ];
+                directories = [
+                  # { directory = ".ssh"; mode = "0700"; }
+                  ".claude"
+                ];
                 files = [ ];
               };
             };
