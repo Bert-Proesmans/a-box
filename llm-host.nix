@@ -148,7 +148,7 @@ in
             noCheck = true;
           };
           fileSystems."/nix".neededForBoot = true;
-          fileSystems."/persistent".neededForBoot = true; # sometimes needed too
+          fileSystems."/persistent".neededForBoot = true;
 
           # disko.devices.nodev = {
           #   "/" = {
@@ -242,6 +242,8 @@ in
                   inInitrd = true;
                   how = "symlink";
                   configureParent = true;
+                  # D-bus breaks if this symlink points to nothing!
+                  createLinkTarget = true;
                 }
                 {
                   file = "/etc/ssh/ssh_host_rsa_key";
@@ -264,6 +266,9 @@ in
               };
             };
           };
+          # Contents of machine-id at uninitialized state (before/during first boot) must be "uninitialized" exactly.
+          # Creating an uninitialized file on persistent storage keeps first-boot semantics throughout systemd.
+          boot.initrd.systemd.tmpfiles.settings.preservation."/sysroot/persistent/etc/machine-id".f.argument = "uninitialized\n";
 
           boot.kernelModules = [
             # Enables (nested) virtualization through hardware acceleration.
