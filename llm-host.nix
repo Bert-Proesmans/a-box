@@ -237,9 +237,22 @@ in
               directories = [ ];
 
               files = [
-                { file = "/etc/machine-id"; inInitrd = true; how = "symlink"; configureParent = true; }
-                { file = "/etc/ssh/ssh_host_rsa_key"; how = "symlink"; configureParent = true; }
-                { file = "/etc/ssh/ssh_host_ed25519_key"; how = "symlink"; configureParent = true; }
+                {
+                  file = "/etc/machine-id";
+                  inInitrd = true;
+                  how = "symlink";
+                  configureParent = true;
+                }
+                {
+                  file = "/etc/ssh/ssh_host_rsa_key";
+                  how = "symlink";
+                  configureParent = true;
+                }
+                {
+                  file = "/etc/ssh/ssh_host_ed25519_key";
+                  how = "symlink";
+                  configureParent = true;
+                }
               ];
 
               users.bert-proesmans = {
@@ -265,6 +278,13 @@ in
             execWheelOnly = true;
             wheelNeedsPassword = true;
           };
+
+          nix.settings.experimental-features = [
+            "nix-command"
+            "flakes"
+          ];
+          nix.settings.connect-timeout = 5;
+          nix.settings.log-lines = 25;
 
           users.mutableUsers = false;
           users.users.bert-proesmans = {
@@ -311,6 +331,7 @@ in
           };
 
           environment.systemPackages = [
+            pkgs.git
             pkgs.claude-code
           ];
 
