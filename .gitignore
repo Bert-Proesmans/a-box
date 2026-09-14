@@ -1,0 +1,8 @@
+result
+result-*
+/agent-vm/guest/target/
+/agent-vm/bpf/build/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
