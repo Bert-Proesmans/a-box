@@ -51,7 +51,7 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
 
 - [x] **B1 — Minimal guest kernel**
   - [x] `agent-vm/nix/guest-kernel.nix` config fragment: VIRTIO_BLK, VIRTIO_VSOCKETS, DEVTMPFS(+MOUNT), TMPFS, OVERLAY_FS, SQUASHFS, BPF+BPF_SYSCALL+KPROBES/BPF_EVENTS, PROC_FS/SYSFS
-  - [x] Non-modular (built-in only) kernel build - `MODULES` left "y" (nixpkgs' generic kernel builder hardcodes that assumption into its install phase with no override point) but no driver is ever built as `m`, so nothing needs loading and no initrd is used
+  - [x] Non-modular (built-in only) kernel build - `CONFIG_MODULES=n`. `pkgs.buildLinux` (generic.nix) hardcodes `CONFIG_MODULES="y"` with no override point; built via `pkgs.linuxManualConfig` (`build.nix` directly) instead, reusing `buildLinux`'s resolved `.configfile` for the fragment-to-config step
   - [x] `vmlinux` output exists, non-empty, `file`-verified as an ELF x86-64 executable - deviates from the plan's `bzImage`: this firecracker build only accepts the uncompressed ELF/PVH kernel image, rejecting bzImage with "Invalid Elf magic number" at InstanceStart (confirmed in B4)
 - [x] **B2 — Device 1 v0 image**
   - [x] `agent-vm/nix/device1-v0.nix`: squashfs containing `/init` (pid1-init binary) plus empty `/proc /sys /dev /tmp` - added in B3 once real mounting needed pre-existing targets on the read-only root (can't `mkdir` at runtime)
@@ -276,3 +276,21 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
   - [ ] `agent-vm/README.md`: image rebuild triggers, full CLI reference, transcript stream locations + DuckDB one-liner
   - [ ] "Decisions made" section: git-http-backend wrapper, package-registry strategy (explicitly left deferred), kernel config fragment, closure isolation mechanism, vsock shim choice
   - [ ] Every runbook claim checked against actual final code, not the original plan
+- [ ] **K4 — Hugepages** (per [firecracker's hugepages.md](https://github.com/firecracker-microvm/firecracker/blob/main/docs/hugepages.md))
+  - [ ] Decide `None` (default) vs `Transparent` (THP via `madvise(MADV_HUGEPAGE)`, guest memory must be a multiple of 2MB) vs `2M` (pre-allocated hugetlbfs pool) for our microVM memory sizes
+  - [ ] If `2M`: host-side hugetlbfs pool sizing/allocation as part of launch prep, sized to cover concurrent-session memory (I7's `max_concurrent_sessions`); undersized pool causes erratic behavior/`SIGBUS`
+  - [ ] Wire the chosen mode into `FirecrackerVM`'s `/machine-config` PUT (`huge_pages` field) alongside `vcpu_count`/`mem_size_mib`
+  - [ ] Note interactions before picking a mode: `Transparent` doesn't work with UFFD during snapshot resume; `2M` requires UFFD and can't combine with file-backed restore; dirty-page tracking forces 4K granularity, negating the benefit either way - relevant only if snapshotting is ever added, otherwise not a blocker
+  - [ ] `needs_kvm` integration/benchmark test: boot time with hugepages enabled vs `None`, on this host's fixture kernel/rootfs
+- [ ] **K5 — Production host hardening** ([firecracker prod-host-setup.md](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md))
+  - [ ] Host kernel: `quiet loglevel=1` on the host's own boot cmdline (llm-host.nix), not the guest's; keep host kernel/microcode current via the normal NixOS update path
+  - [ ] Firecracker invocation: never pass `--seccomp-filter`/`--no-seccomp` (keep the built-in default filters); add `8250.nr_uarts=0` to the *guest* kernel_args once the real agent (H5) no longer needs the console for liveness/debugging, or otherwise rate-limit/null-redirect console output in production
+  - [ ] `terminal.jsonl`/`bpf.jsonl`/`proxy.jsonl` growth is bounded (rotation or size cap) rather than unbounded append-forever, per the "bounded storage for logs" recommendation
+  - [ ] Host-side watchdog: detect and SIGKILL a wedged/unresponsive firecracker process (relates to I5/I6's stop/reap paths - confirm reaping covers a hung, not just a cleanly-stoppable, VM)
+  - [ ] Jailer or equivalent: run firecracker chrooted under a dedicated non-privileged uid/gid per session (one unique uid/gid per concurrent VM), with `--exec-file`/`--chroot-base-dir`/`--netns` unwritable by unprivileged users
+  - [ ] Resource limits per VM via cgroups/jailer: `blkio.throttle.io_serviced` + `io_service_bytes`, `memory.limit_in_bytes` (+ `memsw`/soft limit), `cpu.shares` + `cpu.cfs_period_us`/`cfs_quota_us`, jailer `fsize`/`no-file`
+  - [ ] KVM/host tuning: lower `kvm min_timer_period_us` (modprobe config), move `kvm-pit` kernel threads into each VM's cgroup, disable SMT or otherwise document the tenant-isolation tradeoff for this host, `kvm.nx_huge_pages=never` or cgroups `favordynmods` (kernel 6.1+)
+  - [ ] Host memory: disable swap (or secure swap) so guest memory is never paged to disk; disable KSM to prevent cross-VM page-dedup side channels
+  - [ ] Network egress hardening (builds on chunk F): rate limiters on the guest's network interface (Firecracker API or `tc qdisc`), and explicitly drop TAP-device traffic to the IMDS address `169.254.169.254` regardless of the F2 allowlist
+  - [ ] Hardware vulnerability posture: run `spectre-meltdown-checker` against the host once, record the result in the K3 runbook, and note vendor-specific (Intel/AMD) mitigation guidance to revisit on host CPU changes
+  - [ ] Explicitly out of scope for a single-operator host (record in K3's decision log rather than implementing): per-instance uid/gid *fleet* management beyond what one concurrent-session cap needs, and the ARM-only `KVM_CAP_COUNTER_OFFSET` check (this host is x86_64)

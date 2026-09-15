@@ -1,112 +1,114 @@
 { pkgs }:
 
-# Minimal, non-modular guest kernel for the agent-vm Firecracker microVMs
-# (docs/agent-vm-host-spec.md §3/§9/§12). Built via nixpkgs' `buildLinux` +
-# `structuredExtraConfig` config-fragment mechanism (chunk B1 of
-# docs/agent-vm-host-plan.md) rather than a hand-rolled kbuild invocation.
+# Minimal, non-modular guest kernel for Firecracker microVMs.
+# Built via nixpkgs' buildLinux + structuredExtraConfig (kernel config
+# fragments), not a hand-rolled kbuild invocation.
 #
-# Base config is `allnoconfig` (everything off) with `enableCommonConfig =
-# false` (skip nixpkgs' general-purpose-distro config additions) and
-# `autoModules = false` (anything we do enable comes in built-in, never as
-# a module — there's no initrd to load modules from). The fragment below
-# lists every symbol we need turned on; most also pull in their own
-# Kconfig-level dependencies (e.g. `select`/`depends on` chains) so the
-# list only spells out the leaves, not their transitive requirements.
-#
-# Firecracker (at least the version this was built against) only accepts
-# the uncompressed ELF/PVH kernel image, rejecting the default `bzImage`
-# output with "Invalid Elf magic number" at InstanceStart. nixpkgs'
-# builder always builds a plain `vmlinux` too (regardless of `target`,
-# see build.nix's `buildFlags`) and - because MODULES=y below makes this
-# a "modular" build in its eyes - always copies it to the `dev` output
-# (build.nix's isModular postInstall). So consumers should use
-# `guest-kernel.dev + "/vmlinux"`, not the default `out` output.
+# Firecracker rejects the default bzImage ("Invalid Elf magic number" at
+# InstanceStart) - it wants the uncompressed vmlinux ELF. `make bzImage`
+# builds vmlinux anyway as an intermediate step; copied out below.
 let
   inherit (pkgs) lib;
   inherit (lib.kernel) yes no;
 
-  # Reuse the source tarball + version nixpkgs already has pinned for this
-  # revision, rather than fetching our own kernel tarball out-of-band.
-  base = pkgs.linuxKernel.kernels.linux_6_12;
-in
-pkgs.buildLinux {
-  pname = "agent-vm-guest-kernel";
-  inherit (base) src version;
+  base = pkgs.linuxKernel.kernels.linux_6_12; # pinned kernel source + version
 
-  defconfig = "allnoconfig";
-  enableCommonConfig = false;
-  autoModules = false;
+  # buildLinux (generic.nix) resolves structuredExtraConfig into a real
+  # .config - only the .config is wanted, not this derivation's build.
+  #
+  # generic.nix hardcodes CONFIG_MODULES="y" calling build.nix, ignoring
+  # whatever is configured here, no override point: `.override {config
+  # = ...}` is silently discarded (nothing in generic.nix reads it), and
+  # even build.nix's own override gets clobbered the instant generic.nix's
+  # makeOverridable wrapping re-decorates the result (checked directly
+  # against lib.makeOverridable's source).
+  #
+  # `.configfile` below is its own derivation - reading it doesn't build
+  # the (mislabeled-modular) kernel this produces.
+  resolvedConfig = pkgs.buildLinux {
+    pname = "agent-vm-guest-kernel";
+    inherit (base) src version;
 
-  structuredExtraConfig = {
-    # Everything we enable below is built-in ("y"), never a module ("m") -
-    # autoModules = false enforces that. CONFIG_MODULES itself is left on
-    # rather than forced to "n": nixpkgs' generic kernel builder
-    # (generic.nix's call into build.nix) unconditionally hardcodes
-    # `CONFIG_MODULES = "y"` when deciding its multi-output/install-phase
-    # shape, with no supported override point - forcing "n" here just
-    # desyncs that assumption from the real .config and breaks the
-    # `modules_install` postInstall step. Since no driver we enable is
-    # ever built as "m", this is module *support* compiled in but unused:
-    # there are no .ko files, nothing to load, and no initrd is needed.
-    MODULES = yes;
+    defconfig = "allnoconfig"; # everything off; enable only what's listed
+    enableCommonConfig = false; # skip nixpkgs' distro-kernel additions
+    autoModules = false; # never "m" - no initrd to load modules from
 
-    # Kernel log ring buffer - not required for pid1-init's direct
-    # /dev/console write, but invaluable for seeing panics/boot errors in
-    # the captured console log while developing/debugging.
-    PRINTK = yes;
-    BUG = yes;
+    structuredExtraConfig = {
+      MODULES = no; # respected below via linuxManualConfig, not here
 
-    # TTY + serial console. Firecracker exposes a legacy 8250/16550 UART as
-    # ttyS0 (kernel arg `console=ttyS0`, spec §9) - no virtio-console.
-    TTY = yes;
-    SERIAL_8250 = yes;
-    SERIAL_8250_CONSOLE = yes;
+      # boot log, for panics in the captured console
+      PRINTK = yes;
+      BUG = yes;
 
-    # Block layer + virtio-blk, for the squashfs/ext4 root and data drives.
-    BLOCK = yes;
-    BLK_DEV = yes; # gates the "Block devices" submenu VIRTIO_BLK lives in
-    VIRTIO_BLK = yes;
+      # ttyS0 UART console (`console=ttyS0`) - no virtio-console
+      TTY = yes;
+      SERIAL_8250 = yes;
+      SERIAL_8250_CONSOLE = yes;
 
-    # Firecracker's device model uses virtio over MMIO, not virtio-PCI.
-    VIRTIO = yes;
-    VIRTIO_MENU = yes;
-    VIRTIO_MMIO = yes;
-    # Firecracker instantiates virtio-mmio devices by appending
-    # `virtio_mmio.device=<size>@<addr>:<irq>` to the kernel cmdline -
-    # without this the driver never parses that and no device shows up.
-    VIRTIO_MMIO_CMDLINE_DEVICES = yes;
+      # virtio-blk root/data drives
+      BLOCK = yes;
+      BLK_DEV = yes; # gates the submenu VIRTIO_BLK lives in
+      VIRTIO_BLK = yes;
 
-    # Networking core + AF_VSOCK over virtio, for the host<->guest stdio /
-    # proxy / bpf channels added in chunks C/F/G.
-    NET = yes;
-    VSOCKETS = yes;
-    VIRTIO_VSOCKETS = yes;
+      # Firecracker uses virtio-mmio, not virtio-pci
+      VIRTIO = yes;
+      VIRTIO_MENU = yes;
+      VIRTIO_MMIO = yes;
+      VIRTIO_MMIO_CMDLINE_DEVICES = yes; # parses Firecracker's
+      # `virtio_mmio.device=<size>@<addr>:<irq>` cmdline arg
 
-    # Root/pseudo filesystems.
-    DEVTMPFS = yes;
-    DEVTMPFS_MOUNT = yes;
-    TMPFS = yes;
-    PROC_FS = yes;
-    SYSFS = yes;
-    OVERLAY_FS = yes;
-    MISC_FILESYSTEMS = yes; # gates the submenu SQUASHFS lives in
-    SQUASHFS = yes;
-    SQUASHFS_ZLIB = yes; # matches the `-comp gzip` used when building images
+      # AF_VSOCK over virtio: host<->guest stdio/proxy/bpf (chunks C/F/G)
+      NET = yes;
+      VSOCKETS = yes;
+      VIRTIO_VSOCKETS = yes;
 
-    # Exec support for pid1-init and its children - without this the
-    # kernel cannot exec `/init` at all (ENOEXEC panic).
-    BINFMT_ELF = yes;
+      # root + pseudo filesystems
+      DEVTMPFS = yes;
+      DEVTMPFS_MOUNT = yes;
+      TMPFS = yes;
+      PROC_FS = yes;
+      SYSFS = yes;
+      OVERLAY_FS = yes;
+      MISC_FILESYSTEMS = yes; # gates the submenu SQUASHFS lives in
+      SQUASHFS = yes;
+      SQUASHFS_ZSTD = yes; # matches image builders' `-comp zstd`
 
-    # eBPF + tracing, for chunk G's exec/network/file-open monitoring.
-    BPF = yes;
-    BPF_SYSCALL = yes;
-    BPF_JIT = yes;
-    FTRACE = yes; # "Tracers" menuconfig gate; KPROBE_EVENTS/BPF_EVENTS live under it
-    KPROBES = yes;
-    KPROBE_EVENTS = yes;
-    BPF_EVENTS = yes;
-    PERF_EVENTS = yes;
+      BINFMT_ELF = yes; # exec /init - without it, ENOEXEC panic
+
+      # eBPF + tracing (chunk G: exec/network/file-open monitoring)
+      BPF = yes;
+      BPF_SYSCALL = yes;
+      BPF_JIT = yes;
+      FTRACE = yes; # gates KPROBE_EVENTS/BPF_EVENTS
+      KPROBES = yes;
+      KPROBE_EVENTS = yes;
+      BPF_EVENTS = yes;
+      PERF_EVENTS = yes;
+    };
   };
 
-  extraMeta.description = "agent-vm minimal non-modular guest kernel (chunk B1)";
-}
+  # linuxManualConfig = callPackage build.nix {} (nixpkgs' own name for
+  # it) - one layer below generic.nix's hardcoding, `config` respected.
+  kernel = pkgs.linuxManualConfig {
+    inherit (resolvedConfig) version src configfile modDirVersion;
+    pname = "agent-vm-guest-kernel";
+
+    # non-modular: single "out" output, no modules_install machinery.
+    # FW_LOADER/RUST mirror generic.nix's own hardcoded values.
+    config = {
+      CONFIG_MODULES = "n";
+      CONFIG_FW_LOADER = "y";
+      CONFIG_RUST = "n";
+    };
+
+    extraMeta.description = "agent-vm minimal non-modular guest kernel";
+  };
+in
+kernel.overrideAttrs (previousAttrs: {
+  # x86's install target always copies arch/x86/boot/bzImage, regardless
+  # of `target` - grab vmlinux (built anyway, see file header) by hand.
+  # Non-modular means no competing postInstall block, so order is moot.
+  postInstall = (previousAttrs.postInstall or "") + ''
+    cp vmlinux $out/vmlinux
+  '';
+})

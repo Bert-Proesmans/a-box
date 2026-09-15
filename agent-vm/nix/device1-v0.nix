@@ -26,5 +26,5 @@ pkgs.runCommand "agent-vm-device1-v0.squashfs"
     # as empty directories in the image.
     mkdir -p root/proc root/sys root/dev root/tmp
 
-    mksquashfs root $out -all-root -no-xattrs -comp gzip -noappend
+    mksquashfs root $out -all-root -no-xattrs -comp zstd -Xcompression-level -4 -noappend
   ''

@@ -34,9 +34,9 @@ def _nix_build(attr: str) -> Path:
 
 @pytest.fixture(scope="session")
 def guest_kernel_image() -> Path:
-    # vmlinux (not the default bzImage `out` output) lives in the `dev`
-    # output - see the comment in guest-kernel.nix for why.
-    return _nix_build("guest-kernel.dev") / "vmlinux"
+    # vmlinux (not the default bzImage) is copied out alongside it - see
+    # the comment in guest-kernel.nix for why.
+    return _nix_build("guest-kernel") / "vmlinux"
 
 
 @pytest.fixture(scope="session")
