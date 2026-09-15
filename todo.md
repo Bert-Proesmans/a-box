@@ -11,7 +11,7 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
 ## Chunk overview
 
 - [x] A — Scaffolding
-- [ ] B — Firecracker walking skeleton
+- [x] B — Firecracker walking skeleton
 - [ ] C — vsock stdio + attach
 - [ ] D — Host git mirror & service
 - [ ] E — Block devices & workspace
@@ -49,23 +49,23 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
 
 ## Chunk B — Firecracker walking skeleton
 
-- [ ] **B1 — Minimal guest kernel**
-  - [ ] `agent-vm/nix/guest-kernel.nix` config fragment: VIRTIO_BLK, VIRTIO_VSOCKETS, DEVTMPFS(+MOUNT), TMPFS, OVERLAY_FS, SQUASHFS, BPF+BPF_SYSCALL+KPROBES/BPF_EVENTS, PROC_FS/SYSFS
-  - [ ] Non-modular (built-in only) kernel build
-  - [ ] `bzImage` output exists, non-empty, `file`-verified as Linux boot executable
-- [ ] **B2 — Device 1 v0 image**
-  - [ ] `agent-vm/nix/device1-v0.nix`: squashfs containing only `/init` (pid1-init binary)
-  - [ ] Check derivation: `unsquashfs -l` lists exactly `/` and `/init`
-- [ ] **B3 — pid1-init v0 (mount + liveness)**
-  - [ ] `Mounter` trait + `SyscallMounter`/`FakeMounter`
-  - [ ] `mount_pseudo_filesystems()`: proc, sysfs, devtmpfs, tmpfs
-  - [ ] Liveness line written to `/dev/console`, then park loop
-  - [ ] Unit tests against `FakeMounter` (written first, confirmed red, then green)
-- [ ] **B4 — Python Firecracker launcher + boot proof**
-  - [ ] `firecracker.py`: `FirecrackerVM` (machine config, boot, console-log capture, `stop()`)
-  - [ ] `conftest.py`: `needs_kvm` marker + skip when `/dev/kvm` unusable
-  - [ ] `test_firecracker_boot.py`: boot, poll console log for liveness string, stop, assert clean exit
-  - [ ] Passes on this host
+- [x] **B1 — Minimal guest kernel**
+  - [x] `agent-vm/nix/guest-kernel.nix` config fragment: VIRTIO_BLK, VIRTIO_VSOCKETS, DEVTMPFS(+MOUNT), TMPFS, OVERLAY_FS, SQUASHFS, BPF+BPF_SYSCALL+KPROBES/BPF_EVENTS, PROC_FS/SYSFS
+  - [x] Non-modular (built-in only) kernel build - `MODULES` left "y" (nixpkgs' generic kernel builder hardcodes that assumption into its install phase with no override point) but no driver is ever built as `m`, so nothing needs loading and no initrd is used
+  - [x] `vmlinux` output exists, non-empty, `file`-verified as an ELF x86-64 executable - deviates from the plan's `bzImage`: this firecracker build only accepts the uncompressed ELF/PVH kernel image, rejecting bzImage with "Invalid Elf magic number" at InstanceStart (confirmed in B4)
+- [x] **B2 — Device 1 v0 image**
+  - [x] `agent-vm/nix/device1-v0.nix`: squashfs containing `/init` (pid1-init binary) plus empty `/proc /sys /dev /tmp` - added in B3 once real mounting needed pre-existing targets on the read-only root (can't `mkdir` at runtime)
+  - [x] Check derivation: `unsquashfs -l` lists exactly those six paths
+- [x] **B3 — pid1-init v0 (mount + liveness)**
+  - [x] `Mounter` trait + `SyscallMounter`/`FakeMounter`
+  - [x] `mount_pseudo_filesystems()`: proc, sysfs, tmpfs - devtmpfs deliberately excluded: the kernel already auto-mounts it (`DEVTMPFS_MOUNT=y`) before init runs, and a second manual mount fails with EBUSY (confirmed by an actual boot in B4)
+  - [x] Liveness line written to `/dev/console`, then park loop
+  - [x] Unit tests against `FakeMounter`
+- [x] **B4 — Python Firecracker launcher + boot proof**
+  - [x] `firecracker.py`: `FirecrackerVM` (machine config, boot, console-log capture, `stop()`)
+  - [x] `conftest.py`: `needs_kvm` marker + skip when `/dev/kvm` unusable
+  - [x] `test_firecracker_boot.py`: boot, poll console log for liveness string, stop, assert clean exit
+  - [x] Passes on this host
 
 ## Chunk C — vsock stdio + attach
 

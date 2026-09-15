@@ -3,7 +3,7 @@ name = "agentvm"
 version = "0.0.1"
 description = "Orchestration CLI for isolated LLM code-agent Firecracker microVMs"
 requires-python = ">=3.11"
-dependencies = ["click"]
+dependencies = ["click", "requests", "requests-unixsocket"]
 
 [project.scripts]
 agentvm = "agentvm.cli:main"

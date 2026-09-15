@@ -6,6 +6,8 @@ let
       click
       pytest
       mypy
+      requests
+      requests-unixsocket
     ]
   );
   agentvm = import ./host-package.nix { inherit pkgs; };
@@ -37,5 +39,8 @@ pkgs.mkShell {
 
     # VMM (chunk B+).
     pkgs.firecracker
+
+    # Squashfs image building/inspection for device1-v0 (chunk B2+).
+    pkgs.squashfsTools
   ];
 }
