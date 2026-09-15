@@ -262,7 +262,9 @@ in
                   # { directory = ".ssh"; mode = "0700"; }
                   ".claude"
                 ];
-                files = [ ];
+                files = [
+                  ".claude.json"
+                ];
               };
             };
           };
@@ -302,6 +304,7 @@ in
             extraGroups = [
               "wheel" # Enable 'sudo' for the user
               "systemd-journal" # Read the systemd service journal without sudo
+              "kvm" # Access kvm control device
             ];
             openssh.authorizedKeys.keys = [
               "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDOs8kDMMm/QFeELt79EG9akdfX7dlfRuTezwVEqbPsM bert@B-PC"
@@ -341,6 +344,8 @@ in
           environment.systemPackages = [
             pkgs.git
             pkgs.claude-code
+            pkgs.yazi
+            pkgs.bat
           ];
 
           services.btrfs.autoScrub = {
