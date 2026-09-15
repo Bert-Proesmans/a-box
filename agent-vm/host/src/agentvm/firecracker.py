@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import subprocess
 import time
+import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +24,11 @@ class FirecrackerBootTimeout(Exception):
 
 class FirecrackerApiError(Exception):
     """A Firecracker REST API call returned a non-2xx response."""
+
+
+class FirecrackerProcessExited(Exception):
+    """The firecracker process exited while we were waiting on it for
+    something else (e.g. the API socket or a console log string)."""
 
 
 @dataclass
@@ -43,7 +50,11 @@ class FirecrackerVM:
     _session: requests_unixsocket.Session | None = field(default=None, init=False, repr=False)
 
     def _api_url(self, path: str) -> str:
-        encoded_socket = str(self.api_socket).replace("/", "%2F")
+        # Fully quoted (not just "/" -> "%2F"): requests_unixsocket
+        # recovers the real path with a matching unquote() on its side
+        # (see its UnixAdapter.get_connection), so this round-trips any
+        # character the socket path might contain.
+        encoded_socket = urllib.parse.quote(str(self.api_socket), safe="")
         return f"http+unix://{encoded_socket}{path}"
 
     def _put(self, path: str, body: dict) -> requests.Response:
@@ -55,13 +66,46 @@ class FirecrackerVM:
             )
         return response
 
-    def _wait_for_api_socket(self, timeout: float = 5.0) -> None:
+    def _console_log_text(self) -> str:
+        if self.console_log.exists():
+            return self.console_log.read_text(errors="replace")
+        return ""
+
+    def _poll_until(
+        self,
+        condition: Callable[[], bool],
+        timeout: float,
+        interval: float,
+        make_timeout_error: Callable[[], Exception],
+    ) -> None:
+        """Poll `condition` until it's true, raising promptly (rather than
+        waiting out the full timeout) if the firecracker process exits
+        first - a crashed boot should fail fast with its exit code and
+        console output, not silently spin."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.api_socket.exists():
+            if self._process is not None:
+                exit_code = self._process.poll()
+                if exit_code is not None:
+                    raise FirecrackerProcessExited(
+                        f"firecracker process exited (code {exit_code}) while "
+                        f"waiting; console log:\n{self._console_log_text()}"
+                    )
+            if condition():
                 return
-            time.sleep(0.05)
-        raise TimeoutError(f"firecracker API socket never appeared at {self.api_socket}")
+            time.sleep(interval)
+        raise make_timeout_error()
+
+    def _force_cleanup(self) -> None:
+        """Best-effort teardown: kill the process if it's still running and
+        close the console log handle. Used both when start() fails
+        partway through and by stop()'s own force-kill path."""
+        if self._process is not None and self._process.poll() is None:
+            self._process.kill()
+            self._process.wait()
+        if self._console_fh is not None:
+            self._console_fh.close()
+            self._console_fh = None
 
     def start(self) -> None:
         """Start the firecracker process and boot the configured VM."""
@@ -76,71 +120,84 @@ class FirecrackerVM:
             stdout=self._console_fh,
             stderr=subprocess.STDOUT,
         )
-        self._wait_for_api_socket()
+        try:
+            self._wait_for_api_socket()
 
-        self._session = requests_unixsocket.Session()
+            self._session = requests_unixsocket.Session()
 
-        self._put(
-            "/boot-source",
-            {
-                "kernel_image_path": str(self.kernel_image),
-                "boot_args": self.kernel_args,
-            },
+            self._put(
+                "/boot-source",
+                {
+                    "kernel_image_path": str(self.kernel_image),
+                    "boot_args": self.kernel_args,
+                },
+            )
+            self._put(
+                "/drives/rootfs",
+                {
+                    "drive_id": "rootfs",
+                    "path_on_host": str(self.rootfs_image),
+                    "is_root_device": True,
+                    "is_read_only": True,
+                },
+            )
+            self._put(
+                "/machine-config",
+                {
+                    "vcpu_count": self.vcpu_count,
+                    "mem_size_mib": self.mem_size_mib,
+                },
+            )
+            self._put("/actions", {"action_type": "InstanceStart"})
+        except Exception:
+            self._force_cleanup()
+            raise
+
+    def _wait_for_api_socket(self, timeout: float = 5.0) -> None:
+        self._poll_until(
+            condition=self.api_socket.exists,
+            timeout=timeout,
+            interval=0.05,
+            make_timeout_error=lambda: TimeoutError(
+                f"firecracker API socket never appeared at {self.api_socket}"
+            ),
         )
-        self._put(
-            "/drives/rootfs",
-            {
-                "drive_id": "rootfs",
-                "path_on_host": str(self.rootfs_image),
-                "is_root_device": True,
-                "is_read_only": True,
-            },
-        )
-        self._put(
-            "/machine-config",
-            {
-                "vcpu_count": self.vcpu_count,
-                "mem_size_mib": self.mem_size_mib,
-            },
-        )
-        self._put("/actions", {"action_type": "InstanceStart"})
 
     def wait_for_console_string(self, expected: str, timeout: float = 15.0) -> None:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self.console_log.exists():
-                text = self.console_log.read_text(errors="replace")
-                if expected in text:
-                    return
-            time.sleep(0.1)
-        raise FirecrackerBootTimeout(
-            f"never saw {expected!r} in {self.console_log} within {timeout}s"
+        self._poll_until(
+            condition=lambda: expected in self._console_log_text(),
+            timeout=timeout,
+            interval=0.1,
+            make_timeout_error=lambda: FirecrackerBootTimeout(
+                f"never saw {expected!r} in {self.console_log} within {timeout}s"
+            ),
         )
 
     def is_running(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Stop the VM: try a guest reset first, fall back to killing the
-        firecracker process outright, then wait for it to actually exit."""
+        """Stop the VM by killing the firecracker process.
+
+        There's no working graceful-shutdown path to attempt first:
+        Firecracker's SendCtrlAltDel action relies on the guest noticing
+        an emulated i8042 reset, and this minimal kernel has no
+        keyboard/input driver support to notice it with (see
+        guest-kernel.nix) - so it would only add a guaranteed-to-expire
+        wait. This microVM model is meant to be reaped outright, not
+        gracefully powered off.
+        """
         if self._process is None:
             return
 
-        if self.is_running():
-            try:
-                self._put("/actions", {"action_type": "SendCtrlAltDel"})
-            except Exception:
-                pass
-
+        if self._process.poll() is None:
+            self._process.terminate()
             try:
                 self._process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                self._process.terminate()
-                try:
-                    self._process.wait(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    self._process.kill()
-                    self._process.wait()
+                self._process.kill()
+                self._process.wait()
 
         if self._console_fh is not None:
             self._console_fh.close()
+            self._console_fh = None

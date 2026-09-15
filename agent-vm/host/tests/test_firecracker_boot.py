@@ -34,7 +34,9 @@ def _nix_build(attr: str) -> Path:
 
 @pytest.fixture(scope="session")
 def guest_kernel_image() -> Path:
-    return _nix_build("guest-kernel") / "vmlinux"
+    # vmlinux (not the default bzImage `out` output) lives in the `dev`
+    # output - see the comment in guest-kernel.nix for why.
+    return _nix_build("guest-kernel.dev") / "vmlinux"
 
 
 @pytest.fixture(scope="session")
@@ -62,8 +64,8 @@ def test_boots_and_reaches_liveness(
             console_log=tmp_path / "console.log",
         )
 
-        vm.start()
         try:
+            vm.start()
             vm.wait_for_console_string(LIVENESS_MESSAGE, timeout=15.0)
         finally:
             vm.stop()

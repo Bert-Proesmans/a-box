@@ -192,6 +192,7 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
 - [ ] **H1 — Real minimal closure**
   - [ ] `device1.nix` via nixpkgs' `make-squashfs` helper (coreutils, bash, git, python3)
   - [ ] Check: `unsquashfs -l` contents; closure is self-contained (not host-store-referencing)
+  - [ ] Independently ensure the pid1-init mount-point directories still exist in this image (`/proc /sys /dev /tmp` - see the cross-reference comment in the old `device1-v0.nix` and `pseudo_filesystem_mounts()` in `mount.rs`); this replaces device1-v0's hand-written `mkdir -p` list with no shared source of truth, so don't drop it silently
 - [ ] **H2 — Claude Code CLI + placeholder credential + proxy env**
   - [ ] `allowUnfreePredicate` mirrored for `claude-code`
   - [ ] Placeholder credential file baked in at a fixed path

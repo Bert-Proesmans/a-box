@@ -7,7 +7,7 @@ pkgs.runCommand "agent-vm-guest-kernel-check"
     nativeBuildInputs = [ pkgs.file ];
   }
   ''
-    test -s ${kernel}/vmlinux
-    file ${kernel}/vmlinux | tee $out
+    test -s ${kernel.dev}/vmlinux
+    file ${kernel.dev}/vmlinux | tee $out
     grep -q 'ELF 64-bit.*executable, x86-64' $out
   ''

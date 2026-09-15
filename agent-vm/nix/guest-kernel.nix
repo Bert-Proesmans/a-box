@@ -12,6 +12,15 @@
 # lists every symbol we need turned on; most also pull in their own
 # Kconfig-level dependencies (e.g. `select`/`depends on` chains) so the
 # list only spells out the leaves, not their transitive requirements.
+#
+# Firecracker (at least the version this was built against) only accepts
+# the uncompressed ELF/PVH kernel image, rejecting the default `bzImage`
+# output with "Invalid Elf magic number" at InstanceStart. nixpkgs'
+# builder always builds a plain `vmlinux` too (regardless of `target`,
+# see build.nix's `buildFlags`) and - because MODULES=y below makes this
+# a "modular" build in its eyes - always copies it to the `dev` output
+# (build.nix's isModular postInstall). So consumers should use
+# `guest-kernel.dev + "/vmlinux"`, not the default `out` output.
 let
   inherit (pkgs) lib;
   inherit (lib.kernel) yes no;
@@ -20,7 +29,7 @@ let
   # revision, rather than fetching our own kernel tarball out-of-band.
   base = pkgs.linuxKernel.kernels.linux_6_12;
 in
-(pkgs.buildLinux {
+pkgs.buildLinux {
   pname = "agent-vm-guest-kernel";
   inherit (base) src version;
 
@@ -100,21 +109,4 @@ in
   };
 
   extraMeta.description = "agent-vm minimal non-modular guest kernel (chunk B1)";
-}).overrideAttrs (previousAttrs: {
-  # x86's kbuild `install` target (what nixpkgs' installTargets always uses
-  # for this arch, regardless of the `target` build attribute) hardcodes
-  # copying `arch/x86/boot/bzImage` - there's no plain-`target = "vmlinux"`
-  # install path. But `make bzImage` unconditionally compiles a plain ELF
-  # `vmlinux` first (bzImage is just that plus compressed setup code), and
-  # it's left sitting at the top of the build tree - copy it out too, since
-  # Firecracker (at least this version) only accepts that uncompressed
-  # ELF/PVH image and rejects bzImage with "Invalid Elf magic number".
-  # Prepended, not appended: the isModular postInstall this is layered onto
-  # `cd`s into a copied-out source tree partway through and never returns,
-  # so `vmlinux` (sitting at the top of the real build tree) must be copied
-  # out before that happens.
-  postInstall = ''
-    cp vmlinux $out/vmlinux
-  ''
-  + (previousAttrs.postInstall or "");
-})
+}
