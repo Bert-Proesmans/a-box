@@ -304,6 +304,62 @@ added on top of the VM boundary + BPF visibility.
   adjustable default, e.g. a few hours), after which the host force-stops it
   automatically. A session can also be killed manually at any time via the
   CLI.
+
+### 10.1 Daemon / CLI split
+
+Session state (a running VM's Firecracker handle, its persistent stdio
+vsock connection, its proxy/BPF vsock bridges) must outlive any single CLI
+invocation — `launch` returns to the shell immediately, and `list`/`attach`/
+`stop` are separate, later process invocations. This requires a long-lived
+process to actually own that state:
+
+- **A single long-running host daemon** (`agentvm daemon`, intended to run
+  as a `systemd --user` service — unit wiring is a runbook/host-config
+  concern, tracked in §12) owns every session for the process's lifetime:
+  the git-mirror service and mitmproxy singletons (§6.1.1, §5.2), every
+  session's `SessionManager` (stdio tee + attach fan-out, §11), its
+  vsock↔TCP proxy bridge (§5.1), and its BPF receiver (§7.2).
+- **The CLI is a thin RPC client.** Every subcommand (`launch`, `list`,
+  `attach`, `stop`, `review`, `reap`) connects to a control Unix socket
+  (fixed path under the daemon's runtime directory), sends one
+  newline-delimited JSON request, and prints the JSON response. `launch`
+  does not block for the session's duration — it returns as soon as the
+  daemon reports the VM is running.
+- **Exception:** `attach` does not proxy interactive bytes through the
+  control socket. It first asks the daemon (one control-socket round trip)
+  for the session's `attach.sock` path, then connects to that socket
+  directly for the raw stdin/stdout passthrough (§11) — keeping bulk
+  terminal I/O off the control protocol.
+- This also resolves timeout enforcement more simply than a CLI-triggered
+  check could: the daemon runs its own internal periodic reap loop, so an
+  overdue session is stopped even if no CLI command runs for hours.
+  `agentvm reap` remains available as a manual/systemd-timer trigger, but is
+  no longer the only mechanism.
+- **Crash recovery:** if the daemon itself restarts, it reconciles its
+  on-disk session registry against actual Firecracker processes (by
+  PID/API-socket liveness) at startup, matching stale "running" entries to
+  reality.
+
+### 10.2 Concurrency model
+
+The daemon is a **single asyncio event loop** hosting all sessions as
+concurrent tasks (persistent stdio connections, N attach-client fan-out,
+per-connection proxy bridge relays, BPF event readers). Chosen over a
+thread-per-connection model because mitmproxy's own embeddable master
+(§5.2) is itself asyncio-based, so the proxy bridge composes directly into
+the daemon's loop instead of needing a thread↔event-loop bridge at that
+boundary.
+
+### 10.3 Configuration
+
+Host-wide knobs (`max_concurrent_sessions`, default vcpu/mem, default
+timeout) live in a config file (e.g.
+`$XDG_CONFIG_HOME/agentvm/config.toml`), read once at daemon startup, with
+built-in defaults if the file is absent. Chosen over environment variables
+since more host-wide knobs are expected over time (default resource
+sizing, allowlist entries) and a file scales better than a pile of env
+vars.
+
 - **CLI responsibilities** (exact command surface is an implementation
   detail, but must cover):
   - Launch a session (repo + pinned commit + task input).
@@ -330,25 +386,53 @@ added on top of the VM boundary + BPF visibility.
   review/audit of what happened, not deterministic replay against recorded
   network responses.
 
-## 12. Open Items for the Implementing Developer
+## 12. Decisions Log & Remaining Open Items
 
-These were deliberately left open during specification and need a decision
-during implementation:
+Decisions the spec originally left open, pinned down during implementation
+(see `docs/agent-vm-host-plan.md` and `todo.md` for the chunk/step each
+landed in):
 
-- **`git-http-backend` wrapping** for §6.1.1 — settled on `git-http-backend`
-  bound to host loopback, `upload-pack`-only, over plain HTTP; the remaining
-  choice is how to run it (CGI runner behind a minimal web server vs. a
-  small custom wrapper process).
+- **`git-http-backend` wrapping** (§6.1.1) — a small custom wrapper using
+  stdlib `http.server` invoking `git http-backend` as CGI per request, not
+  a general-purpose CGI runner (chunk D2).
+- **Guest kernel build specifics** (§3, §9) — built via
+  `pkgs.linuxManualConfig` directly, not `pkgs.buildLinux` (which hardcodes
+  `CONFIG_MODULES=y` with no override point); non-modular
+  (`CONFIG_MODULES=n`), producing an uncompressed ELF `vmlinux` — Firecracker
+  rejects `bzImage` outright ("Invalid Elf magic number" at InstanceStart).
+  `devtmpfs` is not manually mounted by pid1-init; the kernel auto-mounts it
+  before init runs, and a second mount fails `EBUSY` (chunk B1/B3).
+- **Nix closure isolation mechanism** (§9) — nixpkgs' own `make-squashfs`
+  closure helper, which already produces an image with its own isolated
+  `/nix/store` prefix rather than bind-mounting the host's (chunk H1).
+- **vsock↔TCP shim implementation** (§5.1) — `socat`, built via
+  `pkgsStatic.socat`. AF_VSOCK support has been in mainline socat since
+  1.7.4 (Jan 2021); no known nixpkgs breakage for this package as of
+  writing (chunk F5).
+- **vsock syscalls in pid1-init** (§4) — the `nix` crate's AF_VSOCK support
+  (already a dependency since B3's mount wrapper), not the separate `vsock`
+  crate — one syscall-wrapper dependency in the tree instead of two
+  (chunk C1).
+- **eBPF load privilege** (§7.1, §8) — loaded while pid1-init is still
+  root, before the capability-drop step (§8). Tracepoint/kprobe BPF program
+  types need `CAP_BPF`+`CAP_PERFMON` specifically (plain `CAP_BPF` alone
+  isn't sufficient) — not worth chasing as a fine-grained capability grant
+  for a process that drops every capability moments later anyway
+  (chunk G5/K1).
+- **Host daemon / CLI process model** (§10.1) — a single long-running
+  daemon process owns all session state; the CLI is a thin RPC client
+  (newline-delimited JSON over a control Unix socket).
+- **Host-side concurrency model** (§10.2) — asyncio, one event loop per
+  daemon process.
+- **Host-wide config source** (§10.3) — a config file, not environment
+  variables.
+
+Still open:
+
 - **Package registry strategy per ecosystem** (§5.3) — local caching mirror
   vs. direct-through-proxy, decided as ecosystems (pip, npm, etc.) are
-  actually needed.
-- **Guest kernel build specifics** — minimal custom kernel config enabling
-  exactly: virtio-vsock, virtio-blk, overlay filesystem, squashfs/erofs,
-  eBPF (`CONFIG_BPF`, `CONFIG_BPF_SYSCALL`, tracepoints/kprobes needed for
-  the exec/open/connect programs in §7.1), and nothing else.
-- **Nix closure isolation build mechanism** for §9 — how exactly a
-  self-contained, host-store-independent closure gets packaged into the
-  read-only rootfs image (e.g. `nix copy` into a fresh store root baked into
-  a squashfs, or equivalent).
-- **vsock↔TCP shim implementation** for §5.1 — confirm `socat` AF_VSOCK
-  support meets the need, or write a minimal purpose-built shim if not.
+  actually needed. No ecosystem beyond git has been wired in yet.
+- **Daemon `systemd --user` unit** — the daemon process itself is built in
+  chunk I, but its supervised-startup unit (enable/start on boot vs. lazy
+  first-launch start, restart policy) is not yet written; tracked for the
+  chunk K3 runbook.

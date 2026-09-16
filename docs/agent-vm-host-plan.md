@@ -53,9 +53,10 @@ Build order:
    (Claude Code CLI, tool allowlist, mitmproxy CA baked in from F). Building
    it last means it can be validated against a fully working proxy/BPF stack
    instead of a stub.
-9. **Session orchestration CLI (I)** — the Python glue (`launch`/`list`/
-   `attach`/`stop`/`review`) that wires B–H into the one command surface
-   §10 requires.
+9. **Session orchestration daemon + CLI (I)** — a long-running daemon
+   (spec §10.1) that wires B–H into the one command surface §10 requires,
+   fronted by a thin RPC-client CLI (`launch`/`list`/`attach`/`stop`/
+   `review`).
 10. **Transcript unification (J)** — retrofits the three independently-built
     writers (terminal/proxy/bpf) onto one shared schema, then proves the
     DuckDB/SQLite queryability requirement (§11) against a real session.
@@ -75,7 +76,7 @@ Build order:
 | F | Network egress | C, D, E | proxy shim, mitmproxy addons, host bridge |
 | G | eBPF monitoring | B | BPF programs, loader, host receiver |
 | H | Guest rootfs closure | F, G | real Device 1, CA bake-in, real agent exec target |
-| I | Orchestration CLI | E, F, G, H | `launch`/`list`/`attach`/`stop`/`review` |
+| I | Orchestration daemon + CLI | E, F, G, H | daemon process, control-socket RPC, `launch`/`list`/`attach`/`stop`/`review` |
 | J | Transcript unification | C, F, G, I | shared schema, DuckDB validation |
 | K | Hardening & polish | everything | cap-drop, full E2E test, docs |
 
@@ -140,14 +141,14 @@ maps 1:1 to one prompt in Part 4.
 - **H4** Per-tool proxy-honoring smoke test (git, curl, pip) using G's connect-tracing to catch any direct-connect fallback.
 - **H5** Wire pid1's final `exec` to the real Claude Code CLI (replacing C1's stub), cwd `/workspace`, full env.
 
-### Chunk I — Orchestration CLI
-- **I1** `SessionConfig` model + on-disk registry.
-- **I2** `launch`: wires D4→E2→E1→VM boot→C2/F6/G6 bridges→registry entry.
-- **I3** `list`: registry + live Firecracker status probe.
-- **I4** `attach`/`detach` CLI wrapper around C3's local socket.
-- **I5** `stop`: graceful + force-kill fallback, registry update.
-- **I6** Timeout enforcement (checked on every CLI invocation, plus a standalone reaper entrypoint for systemd-timer use).
-- **I7** Concurrency cap enforced in `launch`.
+### Chunk I — Orchestration daemon + CLI
+- **I1** `SessionConfig` model + on-disk registry + daemon process skeleton (control Unix socket, newline-JSON RPC, config-file loading — spec §10.1-10.3).
+- **I2** `launch` RPC handler: wires D4→E2→E1→VM boot→C2/F6/G6 bridges (run as asyncio tasks in the daemon)→registry entry; CLI-side thin client.
+- **I3** `list` RPC handler: registry + in-memory status while the daemon's up, Firecracker-probe reconciliation on daemon restart.
+- **I4** `attach`/`detach` CLI: one RPC round trip to resolve `attach.sock`'s path, then direct passthrough to C3's local socket (bypassing the control socket for bulk I/O).
+- **I5** `stop` RPC handler: graceful + force-kill fallback, registry update.
+- **I6** Timeout enforcement: an internal periodic reap task in the daemon's event loop, plus a `reap` RPC for manual/systemd-timer triggering.
+- **I7** Concurrency cap enforced in the `launch` RPC handler.
 - **I8** `review`: diff (E4) piped to `delta`/`less`, plus transcript path listing.
 
 ### Chunk J — Transcript unification
@@ -373,12 +374,13 @@ confirm it passes.
 Building on B3's pid1-init and B4's boot harness. Extend pid1-init:
 
 1. In lib.rs, add `bind_vsock_listener(port: u32) -> io::Result<VsockListener>`
-   using the `vsock` crate (add as dependency) or raw AF_VSOCK syscalls via
-   `nix` if the crate is unsuitable in a musl-static build — verify which
-   compiles cleanly under the musl target and use that. Pick a fixed
-   constant port for stdio (document it in a `ports.rs` module shared by
-   later chunks, e.g. STDIO_PORT = 10000, PROXY_PORT = 10001, BPF_PORT =
-   10002 — later chunks will reuse these constants).
+   using the `nix` crate's AF_VSOCK support (`nix::sys::socket`,
+   `AddressFamily::Vsock`/`VsockAddr` — already a dependency since B3's
+   mount wrapper; decided over the separate `vsock` crate specifically to
+   keep one syscall-wrapper dependency in the tree instead of two, see spec
+   §12). Pick a fixed constant port for stdio (document it in a `ports.rs`
+   module shared by later chunks, e.g. STDIO_PORT = 10000, PROXY_PORT =
+   10001, BPF_PORT = 10002 — later chunks will reuse these constants).
 2. `main()` now: mounts pseudo-fs (B3), binds the stdio vsock listener,
    accepts exactly one connection (blocking), then spawns a stub "agent"
    process with stdin/stdout/stderr dup2'd onto that connection's fd. For
@@ -434,7 +436,10 @@ recorded to `terminal.jsonl` from the moment the session starts (not only
 while a client is attached), and `attach`/`detach` must not kill or disturb
 the underlying session.
 
-1. In `session_manager.py`, add a background reader thread/task on
+1. In `session_manager.py`, add a background reader task (asyncio — the
+   daemon's standardized concurrency model, chunk I / spec §10.2;
+   `SessionManager` instances are created and held by the chunk I daemon
+   for a session's whole lifetime, not by a single CLI invocation) on
    `stdio_sock` that, for every chunk read, appends one JSON line to
    `<session_dir>/terminal.jsonl` with at least `{timestamp, session_id,
    stream: "terminal", direction: "guest_to_host", payload: <base64 or
@@ -762,10 +767,11 @@ reuseaddr VSOCK-CONNECT:2:<PROXY_PORT>` as a detached background child
 (port 2 = the well-known "host" CID in Firecracker's vsock addressing;
 confirm this against Firecracker's vsock docs and use a named constant, not
 a bare `2`, with a comment explaining what it is). Bundle `socat` into
-device1-v0's squashfs (update B2/E3's Nix packaging to include a statically
-linked socat — check nixpkgs for a static build or produce one; if
-unavailable statically, note this as a decision point revisited in chunk H
-when the real closure is built).
+device1-v0's squashfs via `pkgsStatic.socat` (update B2/E3's Nix packaging
+to include it — decided in spec §12: no known nixpkgs breakage for this
+package, and AF_VSOCK support has been in mainline socat since 1.7.4, well
+below any version nixpkgs carries). If it turns out to fail in practice,
+fall back to a minimal custom shim and update spec §12.
 
 Unit test the exact argv constructed for the socat invocation (pure
 function, no process spawning) given a chosen `local_port` and
@@ -791,11 +797,11 @@ connections for concurrent HTTP requests).
 
 In `vsock_bridge.py`, add `serve_guest_connections(uds_path: str, port: int,
 relay_to: tuple[str, int]) -> GuestBridgeServer`: binds
-`f"{uds_path}_{port}"`, accepts connections in a loop (thread-per-connection
-or asyncio, pick whichever matches the rest of the codebase's style — if
-none established yet, use `asyncio` since F's other components will also
-need concurrency), and for each accepted connection opens a TCP connection
-to `relay_to` and pipes bytes bidirectionally until either side closes.
+`f"{uds_path}_{port}"`, accepts connections via `asyncio` (the daemon's
+standardized concurrency model, spec §10.2 — this bridge runs as a task in
+the daemon's event loop, not a standalone thread pool), and for each
+accepted connection opens a TCP connection to `relay_to` and pipes bytes
+bidirectionally until either side closes.
 
 Unit test with a fake TCP echo server standing in for `relay_to`: connect to
 the bound `<uds_path>_<port>` socket as a fake "guest", send bytes, assert
@@ -930,10 +936,11 @@ socket calls directly — Linux's `<linux/vm_sockets.h>` is available even
 without libvsock).
 
 In pid1-init (Rust), add an invocation step: after mounting pseudo-fs and
-before privilege drop (this must happen while still privileged enough to
-load BPF programs — CAP_BPF/CAP_PERFMON or root, whichever this kernel
-build ends up requiring; note whichever it is in a comment), spawn the BPF
-loader binary as a background child via the Spawner trait, and bind an
+before privilege drop (pid1-init is still root at this point — tracepoint/
+kprobe BPF program types need CAP_BPF+CAP_PERFMON specifically, which root
+already implies, so this runs as root rather than chasing a fine-grained
+capability grant, per spec §12), spawn the BPF loader binary as a
+background child via the Spawner trait, and bind an
 AF_VSOCK listener on BPF_PORT for it to connect to (host will connect via
 C2-style host-initiated `CONNECT <port>` since this is a single long-lived
 connection, not per-request like the proxy — reuse that pattern rather than
@@ -1071,45 +1078,70 @@ assert reachability via the terminal channel only, and note that full
 task-completion testing is deferred to chunk K's end-to-end scenario test).
 ```
 
-### Chunk I — Orchestration CLI
+### Chunk I — Orchestration daemon + CLI
 
 #### I1
 
 ```text
-Building on A2's CLI skeleton. Add `session.py`: a `SessionConfig` dataclass
-(repo_url, commit, task_input, vcpu, mem_mb, timeout_seconds) with
-validation (reject empty repo_url/commit, non-positive resource values),
-and a `SessionRegistry` class backed by a directory of one JSON file per
-session (`<state_dir>/sessions/<session_id>.json`) holding
-{session_id, config, status: "starting"|"running"|"stopped"|"failed",
+Building on A2's CLI skeleton and the daemon decision in spec §10.1-10.3.
+Add `session.py`: a `SessionConfig` dataclass (repo_url, commit, task_input,
+vcpu, mem_mb, timeout_seconds) with validation (reject empty repo_url/commit,
+non-positive resource values), and a `SessionRegistry` class backed by a
+directory of one JSON file per session (`<state_dir>/sessions/<session_id>.json`)
+holding {session_id, config, status: "starting"|"running"|"stopped"|"failed",
 started_at, ended_at, pid/vm handle info, paths to session_dir/log files}.
 Provide `create()`, `update(session_id, **fields)`, `get(session_id)`,
-`list_all()`.
+`list_all()`. This registry is authoritative on disk (survives daemon
+restarts) but is only ever mutated from inside the daemon process.
 
-Unit tests: validation rejects the bad configs above; registry round-trips
-correctly through a `tmp_path`; `list_all()` reflects concurrent writes from
-multiple `update()` calls. No KVM needed.
+Add `config.py`: loads host-wide knobs (`max_concurrent_sessions`, default
+vcpu/mem, default timeout_seconds) from a TOML file at
+`$XDG_CONFIG_HOME/agentvm/config.toml`, falling back to built-in defaults if
+the file or any key is absent.
+
+Add `daemon.py`: an `asyncio`-based process with a `run()` entrypoint that
+binds a control Unix socket (fixed path under
+`$XDG_RUNTIME_DIR/agentvm/control.sock`, falling back to a state-dir path if
+`XDG_RUNTIME_DIR` is unset), accepts connections, reads one
+newline-delimited JSON request per connection (`{"cmd": str, "args": {...}}`),
+dispatches to a registered handler function, writes one newline-delimited
+JSON response (`{"ok": true, "result": {...}}` or `{"ok": false, "error":
+str}`), and closes. For this step, register exactly one handler, `"ping"`
+(returns `{"ok": true, "result": "pong"}`), to prove the transport. Add an
+`agentvm daemon` CLI subcommand (A2) that runs `daemon.run()` in the
+foreground (systemd-unit wiring is a chunk K3/README concern, not code).
+
+Unit tests: `SessionConfig`/`SessionRegistry` as originally scoped
+(validation rejects the bad configs above; registry round-trips through a
+`tmp_path`; `list_all()` reflects concurrent writes from multiple
+`update()` calls). `config.py`: defaults apply when the file is absent;
+file values override defaults when present. `daemon.py`: an
+integration-style test (no KVM needed) that starts the daemon against a
+`tmp_path` control-socket path, connects a real client, sends
+`{"cmd": "ping"}`, asserts the `"pong"` response, then stops the daemon.
 ```
 
 #### I2
 
 ```text
 Building on I1 and every prior chunk (D4, E1/E2, B4/F5/F6/G5/G6/H5, C2/C3).
-Add the `launch` CLI command wiring the full pipeline:
+Add the `"launch"` RPC handler, invoked inside the daemon process (I1),
+wiring the full pipeline:
   1. Validate + create a `SessionConfig`/registry entry (I1), status
      "starting".
   2. `prepare_repo` (D4) to sync the mirror and resolve the commit.
   3. Build device 2 (E2) and device 3 (E1) images into the session's
      directory.
   4. Ensure the git service (D2) and mitmproxy (F1-F4, F7 for the
-     allowlist) are running (module-level singletons shared across
-     sessions, started lazily on first launch, referenced by later
-     sessions rather than restarted).
+     allowlist) are running — since the daemon is one long-lived process,
+     these are simply started once at daemon startup (or lazily on first
+     launch) and referenced directly, no cross-process singleton problem.
   5. Boot the VM (B4/H5's real device1, E2/E1 as devices 2/3) with F5's
      shim baked in and G5's loader wired in.
   6. Start C2/C3's SessionManager (stdio + terminal.jsonl + attach socket),
-     F6's guest-bridge for the proxy port, and G6's BPF receiver, all
-     pointed at this session's directory.
+     F6's guest-bridge for the proxy port, and G6's BPF receiver, all as
+     `asyncio` tasks in the daemon's event loop (spec §10.2), pointed at
+     this session's directory.
   7. Update the registry to "running".
 
 Structure this as a `LaunchOrchestrator` class with each subsystem injected
@@ -1118,38 +1150,56 @@ than importing/instantiating concretes inline. Unit test: with every
 dependency faked, assert the steps happen in the right order and the
 registry ends up "running" with the right paths recorded; assert a failure
 in any step (raise from a fake) leaves the registry in "failed" with the
-error captured, not "running". One real `needs_kvm` integration test:
-launch against a tiny fixture repo end-to-end and confirm a running session
-is observable via C2's stdio connection.
+error captured, not "running".
+
+Add the CLI-side thin client: `agentvm launch ...` connects to the control
+socket (I1), sends `{"cmd": "launch", "args": {...}}`, prints the returned
+session_id, and exits immediately — it does not block for the session's
+duration.
+
+One real `needs_kvm` integration test: start the daemon against a fixture
+config, issue a `launch` RPC against a tiny fixture repo end-to-end, and
+confirm a running session is observable via C2's stdio connection (opened
+directly against the session's vsock, independent of the CLI).
 ```
 
 #### I3
 
 ```text
-Building on I1/I2. Add the `list` CLI command: enumerate
-`SessionRegistry.list_all()`, and for any entry marked "running", probe
-Firecracker's instance-info REST endpoint (B4's VM handle) to confirm it's
-actually still alive, correcting the registry to "stopped"/"failed" if the
-process/VM is gone but the registry hadn't been updated (crash recovery).
-Print a table (session_id, status, repo, commit, started_at, elapsed).
+Building on I1/I2. Add the `"list"` RPC handler: enumerate
+`SessionRegistry.list_all()`. While the daemon is up, "running" entries are
+corroborated directly against the in-memory VM handle held by the launch
+task (no need to probe Firecracker's REST API for liveness — the daemon
+already knows). Separately, add startup-time reconciliation in `daemon.py`
+(I1): on daemon start, for every registry entry marked "running", probe
+Firecracker's instance-info REST endpoint (via B4's VM handle reconstructed
+from the registry's saved API-socket path) to confirm the process is still
+alive, correcting stale entries to "stopped"/"failed" if not — this is the
+actual crash-recovery path, since a daemon crash/restart is the only way a
+"running" entry and reality can diverge.
 
-Unit test the reconciliation logic with a fake VM-status prober returning
-"gone" for a registry entry claiming "running", asserting the registry gets
-corrected. Unit test the table formatting separately from the reconciliation
-logic.
+Add the CLI-side `agentvm list` thin client (RPC round trip, then print a
+table: session_id, status, repo, commit, started_at, elapsed).
+
+Unit test the startup reconciliation logic with a fake VM-status prober
+returning "gone" for a registry entry claiming "running", asserting the
+registry gets corrected. Unit test table formatting separately.
 ```
 
 #### I4
 
 ```text
-Building on I2/I3 and C3's attach.sock. Add `attach`/`detach` CLI commands:
-`attach <session_id>` looks up the session's `attach.sock` from the
-registry, connects, and does a raw-terminal passthrough (set the local tty
-to raw mode via `termios`, restore on exit) between the user's terminal and
-that socket until the user detaches (a fixed escape sequence, e.g.
-Ctrl-], mirroring screen/tmux) — detaching must close only the local
-connection, not send anything that would affect C3's persistent
-stdio_sock or other attached clients.
+Building on I2/I3 and C3's attach.sock. Add `attach`/`detach` CLI commands.
+`attach <session_id>` first sends one RPC round trip (`{"cmd":
+"attach_info", "args": {"session_id": ...}}`) to resolve the session's
+`attach.sock` path from the daemon, then connects to that socket
+**directly** (bypassing the control socket entirely) and does a
+raw-terminal passthrough (set the local tty to raw mode via `termios`,
+restore on exit) between the user's terminal and that socket until the
+user detaches (a fixed escape sequence, e.g. Ctrl-], mirroring
+screen/tmux) — detaching must close only the local connection, not send
+anything that would affect C3's persistent stdio_sock or other attached
+clients, and must not touch the control socket at all.
 
 Unit test the escape-sequence detection as a pure function over a byte
 stream (given bytes including the escape sequence split across two reads,
@@ -1164,69 +1214,75 @@ works when substituted in this integration test's config).
 #### I5
 
 ```text
-Building on I2/I3. Add the `stop` CLI command: look up the session, attempt
-a graceful stop via B4's `FirecrackerVM.stop()`, wait up to a short timeout,
-and SIGKILL the firecracker process if it hasn't exited, then update the
-registry to "stopped" with `ended_at` set, and tear down this session's
-SessionManager/bridges/receiver background tasks/threads.
+Building on I2/I3. Add the `"stop"` RPC handler: look up the session,
+attempt a graceful stop via B4's `FirecrackerVM.stop()`, wait up to a short
+timeout, and SIGKILL the firecracker process if it hasn't exited, then
+update the registry to "stopped" with `ended_at` set, and cancel this
+session's SessionManager/bridge/receiver asyncio tasks (I2). Add the
+CLI-side `agentvm stop <session_id>` thin client.
 
 Unit test with a fake VM handle that doesn't respond to graceful stop,
 asserting the force-kill path is taken after the timeout and the registry
 still ends up correctly "stopped". Integration test (`needs_kvm`): launch,
 stop, assert the firecracker process is actually gone (not just the
-registry saying so) and I3's `list` reflects "stopped".
+registry saying so) and `list` reflects "stopped".
 ```
 
 #### I6
 
 ```text
-Building on I1/I5. Add timeout enforcement per spec §10: every session has
+Building on I1/I5. Add timeout enforcement per spec §10.1: every session has
 `timeout_seconds` (I1). Add `reap_overdue_sessions(registry)` — checks every
 "running" entry's `started_at + timeout_seconds` against now, and calls the
 same stop logic as I5 for any overdue session, updating status to "stopped"
 with a reason field `"timeout"`.
 
-Wire this function to run at the start of every CLI invocation (in
-`cli.py`'s top-level setup, before dispatching to the subcommand) so a
-`list`/`launch`/etc. call always reaps first. Also add a standalone `agentvm
-reap` subcommand intended to be invoked periodically by an external
-systemd timer (document this in a comment: CLI-triggered reaping alone
-can't catch an overdue session if no CLI command runs for hours, hence the
-standalone entrypoint for a timer to call).
+Since the daemon is a long-lived asyncio process (unlike a stateless
+per-invocation CLI), wire this as an internal periodic task in `daemon.py`
+(e.g. `asyncio.sleep(N)` in a loop, checking on every tick) rather than
+something that only runs when a CLI command happens to be invoked — this is
+what actually catches an overdue session with nobody watching. Also expose
+a `"reap"` RPC handler (and `agentvm reap` CLI command) that runs the same
+check on demand, useful for scripting/testing without waiting for the next
+tick.
 
 Unit test with a fake clock (inject "now" as a parameter rather than calling
 `time.time()` directly) asserting sessions past their deadline get stopped
-and sessions within their deadline are untouched.
+and sessions within their deadline are untouched. Unit test the periodic
+task triggers the same logic on each tick (fake clock + a short/fake sleep).
 ```
 
 #### I7
 
 ```text
-Building on I1/I2/I6. Add a concurrency cap: a configured
-`max_concurrent_sessions` (module-level default constant, overridable via a
-config file/env var — pick one and document it), enforced in `launch`
-*after* I6's reaping runs (so a just-timed-out session frees its slot before
-the cap is checked): if `len([s for s in registry.list_all() if s.status ==
+Building on I1/I2/I6. Add a concurrency cap: `max_concurrent_sessions` from
+I1's config file, enforced in the `"launch"` RPC handler *after* I6's reap
+check runs (so a just-timed-out session frees its slot before the cap is
+checked): if `len([s for s in registry.list_all() if s.status ==
 "running"]) >= max_concurrent_sessions`, reject the launch with a clear
 error and do not create a registry entry or start any subsystem.
 
 Unit test: with the cap set to 1 and a fake registry already showing one
-"running" session, assert `launch` raises the expected error and I2's
-`LaunchOrchestrator` steps are never invoked (assert via a spy that none of
-the injected fakes were called). Assert a session in "stopped"/"failed"
-status doesn't count against the cap.
+"running" session, assert the `"launch"` handler raises/returns the
+expected error and I2's `LaunchOrchestrator` steps are never invoked (assert
+via a spy that none of the injected fakes were called). Assert a session in
+"stopped"/"failed" status doesn't count against the cap.
 ```
 
 #### I8
 
 ```text
-Building on E4 (diff extraction) and I1/I3. Add the `review` CLI command:
-look up the session, require it be "stopped"/"failed" (refuse with a clear
-message if still "running" — must stop it first), call E4's
-`extract_diff`, and pipe the result to `delta` if present on PATH else
-`less`(subprocess, inheriting the terminal). Also add a `transcript
-<session_id>` command that just prints the three jsonl file paths
-(terminal/proxy/bpf) for the session, plus one ready-to-copy example DuckDB
+Building on E4 (diff extraction) and I1/I3. Add the `"review"` RPC handler:
+look up the session, require it be "stopped"/"failed" (return a clear error
+if still "running"), and return the paths needed (device 3 image path,
+resolved commit info) — the diff itself is computed and paged **on the CLI
+side**, not streamed back through the control socket, to avoid pushing
+potentially large diff text through the RPC transport. `agentvm review
+<session_id>` calls the RPC, then calls E4's `extract_diff` locally and
+pipes the result to `delta` if present on PATH else `less` (subprocess,
+inheriting the terminal). Also add a `transcript <session_id>` command
+(one RPC round trip for the session_dir path) that prints the three jsonl
+file paths (terminal/proxy/bpf) plus one ready-to-copy example DuckDB
 command (`duckdb -c "select * from read_json_auto('<path>/*.jsonl')"`) —
 this doesn't need to *run* DuckDB, just tell the user how to, per spec §11.
 
@@ -1314,9 +1370,10 @@ Use a stub "agent" script (not the real Claude Code CLI, to keep this test
 deterministic and offline) substituted via H5's build-time flag from K1: it
 reads a known file under `/workspace`, appends a line to it, and exits 0.
 
-Drive the full flow through the real CLI commands built in chunk I only
-(not by calling internal modules directly) against a fixture repo with that
-known file: `launch`, poll `list` until "stopped", `review` (assert the
+Start the daemon (I1) as its own process first, then drive the full flow
+through the real CLI commands built in chunk I only (not by calling
+internal modules directly) against a fixture repo with that known file:
+`launch`, poll `list` until "stopped", `review` (assert the
 diff shows exactly the expected line added), inspect `terminal.jsonl` for
 the stub's expected output, inspect `proxy.jsonl` for the git-fetch-through-
 loopback entry and confirm no disallowed destinations appear, inspect
@@ -1336,18 +1393,23 @@ runbook covering: how to rebuild each Nix image and when it's necessary
 (device1 closure changes → rebuild on tool-allowlist changes only, per
 spec §9; device2 → rebuilt per commit automatically by `launch`; kernel →
 rarely, only on config changes), the full CLI command reference
-(launch/list/attach/stop/review/reap), where to look for each transcript
-stream and the DuckDB one-liner from I8, and a "Decisions made" section
-recording, with a one-line rationale each, every item from spec §12:
-git-http-backend wrapping (D2's custom CGI wrapper), package registry
-strategy (explicitly still deferred — state this rather than inventing an
-answer, since the spec says it's decided per-ecosystem as needed and none
-were added in this plan), guest kernel config specifics (B1's fragment
-list), Nix closure isolation mechanism (H1's make-squashfs-based approach),
-and vsock↔TCP shim implementation (F5's socat choice, noting the static-
-linking caveat raised there). No code changes in this step — documentation
-only, but grep the actual final code to make sure every claim in the
-runbook matches what was actually built, not what was originally planned.
+(daemon/launch/list/attach/stop/review/reap), how the daemon is meant to be
+supervised (write the actual `systemd --user` unit here — this is the
+concrete resolution of the still-open item from spec §12), where to look
+for each transcript stream and the DuckDB one-liner from I8, and a
+"Decisions made" section recording, with a one-line rationale each, every
+item from spec §12's decisions log: git-http-backend wrapping (D2's custom
+CGI wrapper), package registry strategy (explicitly still deferred — state
+this rather than inventing an answer, since the spec says it's decided
+per-ecosystem as needed and none were added in this plan), guest kernel
+config specifics and the vmlinux/bzImage + devtmpfs deviations (B1/B3), Nix
+closure isolation mechanism (H1's make-squashfs-based approach), vsock↔TCP
+shim implementation (F5's socat choice), vsock crate choice (C1's `nix`
+crate decision), eBPF load privilege (G5/K1's root-before-drop decision),
+and the daemon/CLI/RPC/concurrency/config-source decisions (I1, spec
+§10.1-10.3). No code changes in this step — documentation only, but grep
+the actual final code to make sure every claim in the runbook matches what
+was actually built, not what was originally planned.
 ```
 
 ---

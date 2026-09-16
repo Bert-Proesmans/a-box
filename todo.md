@@ -18,7 +18,7 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
 - [ ] F — Network egress
 - [ ] G — eBPF monitoring
 - [ ] H — Guest rootfs closure
-- [ ] I — Orchestration CLI
+- [ ] I — Orchestration daemon + CLI
 - [ ] J — Transcript unification
 - [ ] K — Hardening & polish
 
@@ -143,7 +143,7 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
   - [ ] Unit tests: allowed record shape, denied record shape, secret value never present in serialized output
 - [ ] **F5 — Guest vsock↔TCP shim**
   - [ ] pid1 spawns `socat` (`TCP-LISTEN` loopback → `VSOCK-CONNECT` host-CID:`PROXY_PORT`) before stdio accept
-  - [ ] Static `socat` bundled into device1 image (or caveat noted for chunk H)
+  - [ ] Static `socat` bundled into device1 image via `pkgsStatic.socat` (decided, see spec §12 — fall back to a custom shim only if this fails in practice)
   - [ ] Pure unit test of constructed argv
   - [ ] Integration test present (may be folded into F6/F8 — note where)
 - [ ] **F6 — Host vsock↔mitmproxy bridge**
@@ -211,41 +211,45 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
   - [ ] `FakeSpawner` unit test updated for new binary/cwd/env
   - [ ] Prior echo_agent-based integration tests updated/replaced (process starts, stdio reachable, `/workspace` visible)
 
-## Chunk I — Orchestration CLI
+## Chunk I — Orchestration daemon + CLI
 
-- [ ] **I1 — SessionConfig + SessionRegistry**
+- [ ] **I1 — SessionConfig + SessionRegistry + daemon skeleton**
   - [ ] Dataclass + validation (repo/commit non-empty, positive resource values)
-  - [ ] JSON-file-backed registry: `create`/`update`/`get`/`list_all`
-  - [ ] Unit tests: validation rejects bad config; round-trip; concurrent updates reflected
-- [ ] **I2 — `launch` command**
-  - [ ] `LaunchOrchestrator`: registry create → `prepare_repo` → build device2/3 → ensure git-service+mitmproxy singletons → boot VM → start SessionManager/bridge/receiver → mark running
+  - [ ] JSON-file-backed registry: `create`/`update`/`get`/`list_all` (authoritative on disk, mutated only from inside the daemon)
+  - [ ] `config.py`: TOML file (`$XDG_CONFIG_HOME/agentvm/config.toml`) for host-wide knobs, built-in defaults if absent
+  - [ ] `daemon.py`: asyncio process, control Unix socket, newline-JSON RPC (`{"cmd","args"}` → `{"ok","result"|"error"}`), one `"ping"` handler to prove the transport
+  - [ ] `agentvm daemon` CLI subcommand runs it in the foreground (systemd-unit wiring deferred to K3)
+  - [ ] Unit tests: validation rejects bad config; registry round-trip; concurrent updates reflected; config defaults vs file override; daemon ping round-trip
+- [ ] **I2 — `launch` RPC handler + CLI client**
+  - [ ] `LaunchOrchestrator`: registry create → `prepare_repo` → build device2/3 → ensure git-service+mitmproxy started once in-process (no cross-process singleton problem, daemon is one process) → boot VM → start SessionManager/bridge/receiver as daemon-owned asyncio tasks → mark running
   - [ ] Every subsystem dependency-injected for testability
+  - [ ] CLI-side thin client: one RPC round trip, prints session_id, returns immediately (does not block for session duration)
   - [ ] Unit test: step ordering via fakes; failure path leaves registry "failed", not "running"
   - [ ] `needs_kvm` integration test: full launch against fixture repo, observable via stdio
-- [ ] **I3 — `list` command**
-  - [ ] Registry enumeration + Firecracker instance-info reconciliation (crash recovery)
+- [ ] **I3 — `list` RPC handler + CLI client**
+  - [ ] In-memory status while daemon is up; daemon-startup reconciliation against Firecracker instance-info for stale "running" entries (crash recovery)
   - [ ] Table formatting
-  - [ ] Unit tests: reconciliation corrects stale "running"; formatting tested independently
+  - [ ] Unit tests: startup reconciliation corrects stale "running"; formatting tested independently
 - [ ] **I4 — `attach`/`detach` commands**
-  - [ ] Raw-tty passthrough to `attach.sock`; fixed escape sequence to detach
+  - [ ] One RPC round trip (`attach_info`) to resolve `attach.sock` path, then direct raw-tty passthrough bypassing the control socket; fixed escape sequence to detach
   - [ ] Unit test: escape-sequence detection incl. split across reads
   - [ ] `needs_kvm` integration test: attach, type, see response; detach doesn't disturb session
-- [ ] **I5 — `stop` command**
-  - [ ] Graceful stop → timeout → SIGKILL fallback; registry update; teardown of SessionManager/bridges/receiver
+- [ ] **I5 — `stop` RPC handler + CLI client**
+  - [ ] Graceful stop → timeout → SIGKILL fallback; registry update; cancel this session's asyncio tasks
   - [ ] Unit test: force-kill path taken after timeout, registry still correct
   - [ ] `needs_kvm` integration test: process actually gone; `list` reflects "stopped"
 - [ ] **I6 — Timeout enforcement**
   - [ ] `reap_overdue_sessions` with injectable clock; stops overdue sessions with reason "timeout"
-  - [ ] Wired to run at the top of every CLI invocation
-  - [ ] Standalone `agentvm reap` entrypoint for a systemd timer
-  - [ ] Unit tests: overdue vs within-deadline via fake clock
+  - [ ] Runs as an internal periodic task in the daemon's event loop (catches an overdue session even with no CLI invoked for hours)
+  - [ ] `"reap"` RPC handler + `agentvm reap` CLI entrypoint for manual/systemd-timer triggering
+  - [ ] Unit tests: overdue vs within-deadline via fake clock; periodic task fires on tick
 - [ ] **I7 — Concurrency cap**
-  - [ ] `max_concurrent_sessions` config, enforced in `launch` after reaping runs
+  - [ ] `max_concurrent_sessions` from I1's config file, enforced in the `launch` handler after reaping runs
   - [ ] Rejects without creating a registry entry or starting any subsystem when at cap
   - [ ] Unit tests: cap enforcement via spies; stopped/failed sessions excluded from the count
 - [ ] **I8 — `review` and `transcript` commands**
-  - [ ] `review`: require stopped/failed, `extract_diff`, pipe to `delta`/`less`
-  - [ ] `transcript`: print jsonl paths + example DuckDB command
+  - [ ] `review`: RPC returns paths once stopped/failed; CLI computes `extract_diff` locally (not streamed over RPC), pipes to `delta`/`less`
+  - [ ] `transcript`: RPC returns session_dir; CLI prints jsonl paths + example DuckDB command
   - [ ] Unit tests: "must be stopped" guard; pager selection via fake `shutil.which`
   - [ ] `needs_kvm` integration test: launch → stop → review shows expected diff
 
@@ -268,13 +272,14 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
   - [ ] `needs_kvm` integration test: `/proc/self/status` shows non-zero Uid, all-zero CapEff, over the stdio channel
 - [ ] **K2 — Full hermetic end-to-end scenario test**
   - [ ] Deterministic stub agent (swappable via H5 build flag): reads + appends to a known file
-  - [ ] Driven purely through the CLI: `launch` → poll `list` until stopped → `review` (diff correct)
+  - [ ] Daemon started first as its own process, then driven purely through the CLI: `launch` → poll `list` until stopped → `review` (diff correct)
   - [ ] `terminal.jsonl`, `proxy.jsonl` (no disallowed destinations), `bpf.jsonl` (exec + write file_open events) all checked
   - [ ] Second `launch` while at concurrency cap (I7) is rejected
   - [ ] Low `timeout_seconds` session is auto-stopped by reaping (I6)
 - [ ] **K3 — Runbook & §12 decision record**
-  - [ ] `agent-vm/README.md`: image rebuild triggers, full CLI reference, transcript stream locations + DuckDB one-liner
-  - [ ] "Decisions made" section: git-http-backend wrapper, package-registry strategy (explicitly left deferred), kernel config fragment, closure isolation mechanism, vsock shim choice
+  - [ ] `agent-vm/README.md`: image rebuild triggers, full CLI reference (incl. `daemon`/`reap`), transcript stream locations + DuckDB one-liner
+  - [ ] Write the daemon's `systemd --user` unit (the one item spec §12 still lists as open)
+  - [ ] "Decisions made" section covering every entry in spec §12's decisions log: git-http-backend wrapper, package-registry strategy (explicitly left deferred), kernel config fragment + vmlinux/bzImage + devtmpfs deviations, closure isolation mechanism, vsock shim choice, vsock crate choice (`nix`, not `vsock`), eBPF load privilege (root before cap-drop), daemon/RPC/concurrency/config-source decisions
   - [ ] Every runbook claim checked against actual final code, not the original plan
 - [ ] **K4 — Hugepages** (per [firecracker's hugepages.md](https://github.com/firecracker-microvm/firecracker/blob/main/docs/hugepages.md))
   - [ ] Decide `None` (default) vs `Transparent` (THP via `madvise(MADV_HUGEPAGE)`, guest memory must be a multiple of 2MB) vs `2M` (pre-allocated hugetlbfs pool) for our microVM memory sizes
