@@ -78,7 +78,7 @@ Build order:
 | C | vsock stdio + attach | B | interactive channel, terminal.jsonl |
 | D | Host git mirror & service | A | local mirror manager, git-http-backend service |
 | E | Block devices & workspace | B, D | device2/3 builders, overlay mount, diff extraction |
-| F | Network egress | C, D, E | proxy shim, mitmproxy addons, host bridge |
+| F | Network egress | C, D, E | proxy shim, mitmproxy addons, host bridge, shared per-session slot allocator |
 | G | eBPF monitoring | B | BPF programs, loader, host receiver |
 | H | Guest rootfs closure | F, G | real Device 1, CA bake-in, real agent exec target |
 | I | Orchestration (systemd units) + CLI | E, F, G, H | rendered systemd unit graph, `launch`/`list`/`attach`/`stop`/`review`/`doctor` CLI |
@@ -124,12 +124,13 @@ maps 1:1 to one prompt in Part 4.
 ### Chunk F — Network egress
 - **F1** mitmproxy CA generation/persistence, idempotent, stored under `/persistent`.
 - **F2** Allowlist addon: deny-by-default, domain entries, exact loopback entries, SSRF guard against other loopback/private ranges.
-- **F3** Credential-injection addon: real Anthropic key swapped in only for the allowlisted Anthropic destination.
-- **F4** `proxy.jsonl` transcript addon with mandatory Authorization redaction.
-- **F5** Guest vsock↔TCP shim: pid1 spawns it as a background child before privilege drop.
-- **F6** Host vsock↔mitmproxy bridge: accept-loop on the guest-initiated per-port UDS, relay to mitmproxy's TCP listener, supporting concurrent connections.
-- **F7** Wire D2's git service into F2's allowlist as the loopback exception.
-- **F8** Full egress end-to-end test: allowed domain succeeds, disallowed domain blocked+logged, git fetch through the loopback entry succeeds, DNS lookup fails fast.
+- **F3** Credential-injection addon: real Anthropic key swapped in only for the allowlisted Anthropic destination; tags the flow with whether it actually did so (spec §5.2).
+- **F4** Shared per-session slot allocator (spec §5.2.1/§12.2): hands out an integer slot in `[0, max_concurrent_sessions)` at launch, returns it at stop — the one pool later backing both mitmproxy's per-session port (F5) and jailer's per-session uid/gid (K5.2).
+- **F5** `proxy.jsonl` transcript addon: per-session file routing via F4's slot assignment, resolved-destination-IP and `credential_injected` fields, mandatory Authorization redaction, no size cap (spec §11.1).
+- **F6** Guest vsock↔TCP shim: pid1 spawns it as a background child before privilege drop.
+- **F7** Host vsock↔mitmproxy bridge: accept-loop on the guest-initiated per-port UDS, relays to mitmproxy's *slot-assigned* TCP listener (spec §5.2.1), supporting concurrent connections, no byte cap (functional traffic, not a transcript).
+- **F8** Wire D2's git service into F2's allowlist as the loopback exception.
+- **F9** Full egress end-to-end test: allowed domain succeeds, disallowed domain blocked+logged, git fetch through the loopback entry succeeds, DNS lookup fails fast, `proxy.jsonl` lands in the right session's directory with correct `resolved_ip`/`credential_injected` fields.
 
 ### Chunk G — eBPF monitoring
 - **G1** BPF program v1: exec tracing + loader emitting JSONL to stdout.
@@ -157,7 +158,7 @@ maps 1:1 to one prompt in Part 4.
 - **I8** `doctor` CLI subcommand skeleton: cgroup-v2 check + host-wide singleton service liveness (spec §10.3, §12.5 — extended with hugepage/mitigation data in K5.5).
 
 ### Chunk J — Transcript unification
-- **J1** Shared schema module; retrofit C3/F4/G6 to emit through it.
+- **J1** Shared schema module; retrofit C3/F5/G6 to emit through it.
 - **J2** DuckDB cross-file query integration test.
 
 ### Chunk K — Hardening & polish
@@ -165,13 +166,13 @@ maps 1:1 to one prompt in Part 4.
 - **K2** Full hermetic end-to-end scenario test across every chunk.
 - **K3** Runbook + written record of every §15 decision made.
 - **K4** Hugepages: `2M` mode wired into the machine-config PUT, host-side hugetlbfs pool sizing in `llm-host.nix` (spec §12.1).
-- **K5.1** Growth-bounding: the shared 100MB-hard-cap-per-file discipline (§11.1) retrofitted across F6's relay, G6's receiver, F4's addon, and C3's tee.
-- **K5.2** Per-session-unique jailer uid/gid, replacing I1's single shared uid/gid (spec §12.2).
+- **K5.1** Growth-bounding: the shared 100MB-hard-cap-per-file discipline (§11.1) retrofitted across G6's receiver and C3's tee only — F5's `proxy.jsonl` addon and F7's relay are deliberately excluded (spec §11.1: capping the relay would sever legitimate large transfers, capping the log risks truncating the exact exfiltration evidence it exists to catch).
+- **K5.2** Per-session-unique jailer uid/gid, derived from F4's shared slot allocator instead of a second pool (spec §12.2).
 - **K5.3** Inactivity watchdog: `check_idle` pure function + the `-idle.timer`/`-idle.service` unit pair added to I1's renderer (spec §11.2).
 - **K5.4** KVM/host tuning: `llm-host.nix` modprobe/cmdline config, plus the `kvm-pit` cgroup-placement poststart script on the `-vm.service` unit (spec §12.4).
 - **K5.5** `doctor` subcommand, full: `spectre-meltdown-checker` output, hugepage pool state, and running-unit hardening verification (spec §12.5).
 
-That's 57 steps across 11 chunks — each independently testable, each no
+That's 58 steps across 11 chunks — each independently testable, each no
 larger than "one new capability wired into what already exists."
 
 ---
@@ -716,7 +717,7 @@ Config shape: a list of entries, each `{"kind": "domain", "host": str,
 Deny-by-default: any request whose destination doesn't exactly match an
 entry gets `flow.response` set to a synthetic 403 (never forwarded), and is
 recorded (store rejections on `flow.metadata["allowlist_decision"] =
-"denied"` for F4 to log). A "loopback" entry must match `127.0.0.1` exactly
+"denied"` for F5 to log). A "loopback" entry must match `127.0.0.1` exactly
 at that port only — any other loopback address or any RFC1918/private range
 destination is denied even if not explicitly listed (the point being the
 proxy can never be pivoted into an SSRF against other host-local services).
@@ -745,34 +746,91 @@ passed into the addon's constructor). For every other destination, leave
 the header untouched (including leaving whatever placeholder the guest
 sent, if any).
 
+Also tag every evaluated flow with whether the swap happened:
+`flow.metadata["credential_injected"] = True` when this addon replaced the
+header for the matching destination, `False` otherwise (spec §5.2) — this
+is what F5's transcript addon records, independent of and in addition to
+the (always redacted) header value itself.
+
 Unit tests with `tflow`: matching destination gets its Authorization header
-replaced with the configured real value; a non-matching destination's
-header (if present) is left exactly as the guest sent it, proving the real
+replaced with the configured real value and `credential_injected` set
+`True`; a non-matching destination's header (if present) is left exactly as
+the guest sent it and `credential_injected` is `False`, proving the real
 key is never attached to unrelated requests.
 ```
 
 #### F4
 
 ```text
-Building on F2/F3. Add `mitm_addons/transcript.py`: a `response(flow)` hook
-(fires after the exchange completes) that appends one JSON line per request
-to `<session_dir>/proxy.jsonl` with: timestamp, session_id, method, host,
-port, path, status_code (or None if F2 denied it before forwarding — read
-`flow.metadata["allowlist_decision"]`), duration_ms, request/response byte
-sizes. Mandatory rule: never include the literal Authorization header
-value in the log line, for *any* request — redact it to a fixed placeholder
-string like `"[REDACTED]"` if present at all, regardless of whether F3
-rewrote it.
+Host-only, no KVM. Add `slots.py`: a shared per-session **slot allocator**
+— `acquire_slot(max_concurrent_sessions: int) -> int` hands out an integer
+in `[0, max_concurrent_sessions)` not currently held, `release_slot(slot:
+int) -> None` returns it to the pool. This is a foundational utility with
+no dependents built yet at this point in the chunk; F5 uses a slot to route
+`proxy.jsonl` per session, F7 uses one to pick which mitmproxy port to
+relay to, and chunk K5.2 reuses the *same* allocator for jailer's
+per-session uid/gid (spec §12.2 — one shared slot concept backing all
+three, not independent pools). Persist held slots the same way chunk I's
+metadata/registry pieces persist state (a small on-disk file under the
+runtime/state directory, since this needs to survive across the separate
+CLI invocations that acquire a slot at launch and release it at stop — no
+long-lived process holds this in memory).
 
-Unit tests with `tflow`: an allowed request produces a line with the right
-fields and status; a denied request (from F2) produces a line with
-`status_code: null` and a `decision: "denied"` field; a request carrying an
-Authorization header (real or placeholder) never has that value appear
-anywhere in the emitted JSON — assert by string-searching the serialized
-line for the known secret value and asserting absence.
+Unit tests: acquiring up to `max_concurrent_sessions` slots returns N
+distinct integers; acquiring one more while all are held raises/blocks with
+a clear error (mirror I6's concurrency-cap error style); releasing a slot
+makes it available for reuse by the next acquire.
 ```
 
 #### F5
+
+```text
+Building on F2/F3 (addon pattern, `credential_injected` flag) and F4 (slot
+allocator). Add `mitm_addons/transcript.py`: a `response(flow)` hook (fires
+after the exchange completes) that:
+
+1. Resolves the flow's session by reading the local port the connection
+   arrived on (`flow.client_conn.sockname`), mapping that port back to a
+   slot index (`port - mitm_base_port`), and looking up that slot's current
+   `{session_id, session_dir}` in the on-disk slot-assignment file F4's
+   allocator (or chunk I's `launch`/`stop`, once that exists) keeps
+   current. Appends one JSON line to `<that session's session_dir>/proxy.jsonl`
+   — mitmproxy is one host-wide singleton (spec §5.2) serving every
+   session, so this per-flow lookup is what actually splits the log by
+   guest, not a per-session process.
+2. Records: timestamp, session_id, method, host, port, path, status_code
+   (or None if F2 denied it before forwarding — read
+   `flow.metadata["allowlist_decision"]`), duration_ms, request/response
+   byte sizes, **`resolved_ip`** (the actual IP mitmproxy connected to for
+   this destination, e.g. `flow.server_conn.peername`/`.ip_address` — the
+   host's own DNS resolution result, since the guest never resolves
+   anything itself per §5.1.1), and **`credential_injected`** (read from
+   F3's flag).
+3. Mandatory rule, unchanged: never include the literal Authorization
+   header value in the log line, for *any* request — redact it to a fixed
+   placeholder string like `"[REDACTED]"` if present at all, regardless of
+   whether F3 rewrote it.
+
+This addon applies **no size cap** to `proxy.jsonl` (spec §11.1, decided
+explicitly, not an oversight): this file is the audit trail a real
+exfiltration attempt would show up in, and it must never be the one that
+gets truncated right when it matters most. Chunk K5.1 does not touch this
+addon.
+
+Unit tests with `tflow` and a fixture slot-assignment mapping: a request
+arriving on slot N's port ends up in slot N's session_dir; `resolved_ip`
+and `credential_injected` are present and correct; an allowed request
+produces a line with the right fields and status; a denied request (from
+F2) produces a line with `status_code: null` and a `decision: "denied"`
+field; a request carrying an Authorization header (real or placeholder)
+never has that value appear anywhere in the emitted JSON — assert by
+string-searching the serialized line for the known secret value and
+asserting absence; and confirm there's simply no cap-related logic in this
+addon at all (no size check, no truncation path) — its only bound is disk
+space.
+```
+
+#### F6
 
 ```text
 Building on C1's pid1-init spawn logic. Add a vsock↔TCP shim step to
@@ -794,21 +852,21 @@ function, no process spawning) given a chosen `local_port` and
 shim running, from the host open a listener on the *guest-facing* side of a
 fake vsock peer (a raw AF_VSOCK socket bound to the host CID at
 PROXY_PORT... note Firecracker vsock specifics may require this via the
-`<uds_path>_<PROXY_PORT>` convention — implement the host side using F6's
+`<uds_path>_<PROXY_PORT>` convention — implement the host side using F7's
 bridge once it exists; if sequencing makes a standalone test awkward here,
-it's acceptable to fold this step's integration test into F6/F8 instead —
+it's acceptable to fold this step's integration test into F7/F9 instead —
 state clearly in your PR/commit message which test proves this step and
 why.
 ```
 
-#### F6
+#### F7
 
 ```text
-Building on F5. Firecracker vsock guest-initiated connections appear on the
-host as new connections on `<uds_path>_<port>` — the host must bind/listen
-on that exact path *before* the guest connects, and must accept-loop (a
-socat `fork`ed shim on the guest side may open several concurrent
-connections for concurrent HTTP requests).
+Building on F4 (slot allocator) and F6. Firecracker vsock guest-initiated
+connections appear on the host as new connections on `<uds_path>_<port>` —
+the host must bind/listen on that exact path *before* the guest connects,
+and must accept-loop (a socat `fork`ed shim on the guest side may open
+several concurrent connections for concurrent HTTP requests).
 
 In `vsock_bridge.py`, add `serve_guest_connections(uds_path: str, port: int,
 relay_to: tuple[str, int]) -> GuestBridgeServer`: binds
@@ -818,18 +876,27 @@ daemon event loop to plug into; spec §10.2 was struck, and this process
 runs standalone, one per session, later supervised directly by systemd as
 chunk I/K5's `agentvm-session-<id>-recv-proxy.service` unit), and for each
 accepted connection opens a TCP connection to `relay_to` and pipes bytes
-bidirectionally until either side closes.
+bidirectionally until either side closes. `relay_to` is now
+`("127.0.0.1", mitm_base_port + slot)` — the caller (eventually chunk I's
+`launch`) passes in the slot this session acquired from F4's allocator, so
+mitmproxy's F5 addon can later resolve session identity from which port
+accepted the connection (spec §5.2.1).
 
-Unit test with a fake TCP echo server standing in for `relay_to`: connect to
-the bound `<uds_path>_<port>` socket as a fake "guest", send bytes, assert
-they come back via the relay. Test two concurrent connections are both
-served correctly (not serialized/blocked on each other). (Chunk K5.1 later
-adds the shared 100MB-hard-cap-per-file discipline from spec §11.1 on top
-of this relay — total bytes relayed, not file bytes, since this process
-doesn't write a file itself; not built yet at this step.)
+This process is a pure byte relay: it does not write `proxy.jsonl` itself
+(F5's mitmproxy addon does that) and gets **no byte cap** (chunk K5.1
+explicitly excludes it — capping live HTTP(S) tunnel traffic would sever an
+in-progress legitimate transfer, e.g. cloning a large repo through the
+allowlisted git entry, which is a functional regression rather than a
+safety measure).
+
+Unit test with a fake TCP echo server standing in for `relay_to`, parametrized
+by slot (assert it relays to the correct `mitm_base_port + slot` target):
+connect to the bound `<uds_path>_<port>` socket as a fake "guest", send
+bytes, assert they come back via the relay. Test two concurrent connections
+are both served correctly (not serialized/blocked on each other).
 ```
 
-#### F7
+#### F8
 
 ```text
 Building on D2 (git service) and F2 (allowlist config shape). Add a small
@@ -842,21 +909,23 @@ returns exactly those two entries with correct shapes — this is the piece
 that later gets threaded into F2's addon config by chunk I's `launch`.
 ```
 
-#### F8
+#### F9
 
 ```text
-Building on F1-F7 and E3 (workspace mount) and D2 (git service). This is
+Building on F1-F8 and E3 (workspace mount) and D2 (git service). This is
 the full egress end-to-end test, `@pytest.mark.needs_kvm`. Set up:
   - A real `GitHttpBackendServer` (D2) over a fixture mirror.
+  - F4's slot allocator, with this test session acquiring a fixture slot.
   - A real mitmproxy instance (programmatically, via mitmproxy's
-    `DumpMaster`/async API) loaded with F2+F3+F4 addons and F7's allowlist,
-    plus one extra fake "allowlisted domain" entry pointed at a local
-    HTTPS test server you stand up in the test (e.g. via `pytest-httpserver`
-    or a bare `http.server` with a self-signed cert) standing in for
-    api.anthropic.com.
-  - F6's bridge relaying the VM's guest-initiated PROXY_PORT connections to
-    that mitmproxy instance's TCP listener.
-  - A VM booted with device1 including F5's socat shim, HTTP_PROXY/
+    `DumpMaster`/async API) loaded with F2+F3+F5 addons and F8's allowlist,
+    listening on that slot's port, plus one extra fake "allowlisted domain"
+    entry pointed at a local HTTPS test server you stand up in the test
+    (e.g. via `pytest-httpserver` or a bare `http.server` with a
+    self-signed cert) standing in for api.anthropic.com.
+  - F7's bridge, configured with the acquired slot, relaying the VM's
+    guest-initiated PROXY_PORT connections to that mitmproxy instance's
+    slot-assigned TCP listener.
+  - A VM booted with device1 including F6's socat shim, HTTP_PROXY/
     HTTPS_PROXY env pointed at the shim's local port, and an *empty*
     `/etc/resolv.conf`.
 
@@ -868,9 +937,12 @@ or a tiny Rust/C helper if getent isn't available) and printing
 success/failure to stdout.
 
 Drive all four commands via C2's SessionManager and assert: curl-allowed
-succeeds, curl-denied fails (proxy 403) and produces a `denied` line in
-proxy.jsonl, git-fetch against the loopback entry succeeds, dns-lookup fails
-fast (not a timeout) since resolv.conf is empty.
+succeeds and its `proxy.jsonl` line (in this session's own directory, per
+F5's per-slot routing) shows the correct `resolved_ip` and
+`credential_injected` fields, curl-denied fails (proxy 403) and produces a
+`denied` line in the same session's proxy.jsonl, git-fetch against the
+loopback entry succeeds, dns-lookup fails fast (not a timeout) since
+resolv.conf is empty.
 ```
 
 ### Chunk G — eBPF monitoring
@@ -948,7 +1020,7 @@ This closes out spec §7.1's four required event categories.
 #### G5
 
 ```text
-Building on G1-G4 (loader now emits four event types to stdout) and F5's
+Building on G1-G4 (loader now emits four event types to stdout) and F6's
 constants module (BPF_PORT). Change the loader so instead of printing to
 stdout, it connects to a vsock listener on BPF_PORT and writes JSONL there
 (mirror C1's AF_VSOCK approach, but the loader is C, so use raw AF_VSOCK
@@ -964,7 +1036,7 @@ background child via the Spawner trait, and bind an
 AF_VSOCK listener on BPF_PORT for it to connect to (host will connect via
 C2-style host-initiated `CONNECT <port>` since this is a single long-lived
 connection, not per-request like the proxy — reuse that pattern rather than
-F6's guest-initiated one).
+F7's guest-initiated one).
 
 Unit test (FakeSpawner) that pid1-init issues this spawn with the right
 argv/timing (after mount, before the eventual privilege-drop step landing
@@ -1030,7 +1102,7 @@ placeholder credentials file baked into the image at a fixed path (e.g.
 `/etc/agentvm/anthropic-api-key.placeholder`, containing a literal
 placeholder string like `"placeholder-do-not-use"`), and have pid1-init
 (extend the env-setup step) export `ANTHROPIC_API_KEY` read from that file
-plus `HTTP_PROXY`/`HTTPS_PROXY` pointing at F5's local shim port, as env
+plus `HTTP_PROXY`/`HTTPS_PROXY` pointing at F6's local shim port, as env
 vars for whatever it execs next.
 
 Unit test (Rust): the env-assembly function (pure, given a placeholder-file
@@ -1062,13 +1134,13 @@ bake-in without needing to boot a VM.
 #### H4
 
 ```text
-Building on H1-H3 and G2 (network connect tracing) and F8's egress harness.
+Building on H1-H3 and G2 (network connect tracing) and F9's egress harness.
 Add an integration test (`needs_kvm`+`needs_root`) that boots a VM with the
-real H3 device1 image (not the stub), F5's shim configured, F8-style
+real H3 device1 image (not the stub), F6's shim configured, F9-style
 mitmproxy+bridge running, and G5's BPF loader wired in. Inside the guest,
 run each tool actually shipped in the closure that talks HTTP(S) — at
 minimum `git ls-remote` against the loopback git entry, and `curl` against
-the fake allowlisted domain from F8. Assert two things per tool: the
+the fake allowlisted domain from F9. Assert two things per tool: the
 request succeeds through the proxy (proxy.jsonl shows it, allowed), and
 bpf.jsonl shows *zero* "network" events whose destination is anything other
 than the shim's own loopback port (i.e., no tool fell back to a direct
@@ -1090,7 +1162,7 @@ env-assembly function applied.
 
 This is a wiring change, not new logic — update the FakeSpawner-based unit
 test from C1 to assert the new binary path/cwd/env are what gets passed to
-spawn, and update/replace the C1-derived and F8/H4 integration tests that
+spawn, and update/replace the C1-derived and F9/H4 integration tests that
 depended on echo_agent's specific stub commands: since Claude Code needs a
 real task/prompt to do anything, for now assert only that (a) the process
 starts, (b) its stdio is reachable via C2's SessionManager exactly as
@@ -1107,7 +1179,7 @@ Spec §10.1 superseded the original single-daemon design: there is no
 long-lived process owning session state at all. Instead, `launch` renders
 a per-session systemd unit graph and starts it as one transaction; `list`,
 `stop`, `review` etc. talk to `systemctl`/the filesystem directly. Chunks
-C2/C3, F5/F6, G5/G6 already built the actual guest-facing logic
+C2/C3, F6/F7, G5/G6 already built the actual guest-facing logic
 (SessionManager, the vsock↔mitmproxy bridge, the BPF receiver) as
 standalone OS processes — chunk I doesn't change what they do, only wraps
 each in a systemd unit and gives the CLI a way to start/stop the whole
@@ -1129,10 +1201,10 @@ repo_url, commit, vcpu, mem_mb, timeout_seconds):
 
   - `render_target(session_id) -> str`: `agentvm-session-<id>.target`,
     `Requires=`+`After=` the two host-wide singleton services
-    (`agentvm-git-service.service`, `agentvm-mitmproxy.service` — D2/F1-F4
-    will eventually back these; for this step just reference them by unit
-    name, they don't need to exist yet for unit-text rendering to be
-    testable).
+    (`agentvm-git-service.service`, `agentvm-mitmproxy.service` — D2 backs
+    the former, F1-F3+F5 back the latter; for this step just reference them
+    by unit name, they don't need to exist yet for unit-text rendering to
+    be testable).
   - `render_vm_service(session_id, ..., timeout_seconds) -> str`:
     `agentvm-session-<id>-vm.service` — the jailer/firecracker unit.
     Include `--cgroup-version 2`, `Delegate=yes`, `IPAddressDeny=any`,
@@ -1144,10 +1216,15 @@ repo_url, commit, vcpu, mem_mb, timeout_seconds):
     not unique-per-concurrent-session yet — K5.2 hardens this).
   - `render_recv_proxy_service(session_id, ...) -> str` and
     `render_recv_bpf_service(session_id, ...) -> str`: `PartOf=` the vm
-    unit, `Restart=no` (spec §11.1 — an auto-restarted receiver would
-    silently reopen a socket its own cap-enforcement just closed; the cap
-    logic itself doesn't exist until K5.1, this step just wires the unit
-    shape).
+    unit, `Restart=no` on both — matches the general "nothing self-heals"
+    policy (§10.1: a stopped unit is a decision, not a hiccup to paper
+    over). For `recv-bpf` specifically this also prevents an
+    auto-restarted process from silently reopening a socket its own
+    cap-enforcement just closed once K5.1 adds that (not built yet, this
+    step just wires the unit shape); `recv-proxy` never gets a cap at all
+    (spec §11.1 — it's a pure relay, capping it would sever legitimate
+    in-progress transfers) but keeps `Restart=no` regardless, for the same
+    "no self-healing" reason as every other unit here.
   - `render_stdio_service(session_id, ...) -> str`: `PartOf=` the vm unit,
     `Restart=no`.
 
@@ -1179,7 +1256,7 @@ values override defaults when present.
 
 ```text
 Building on I1's renderers and every prior chunk (D4, E1/E2, B4/H5,
-C2/C3's SessionManager, F5/F6's bridge, G5/G6's receiver). Add the
+C2/C3's SessionManager, F6/F7's bridge, G5/G6's receiver). Add the
 `launch` CLI command, wiring the full pipeline as one function (inject
 each subsystem via a parameter/constructor for testability, same pattern
 this plan has used throughout — e.g. a `LaunchPipeline` class rather than
@@ -1189,12 +1266,19 @@ importing concretes inline):
   2. Build device 2 (E2) and device 3 (E1) images into the session's
      directory.
   3. Write I1's session metadata file.
-  4. Render I1's five unit files and write them to the systemd unit search
+  4. Acquire a slot from F4's allocator and record this session's
+     `{session_id, session_dir}` under that slot in the on-disk
+     slot-assignment file (spec §5.2.1) — this is what lets F5's mitmproxy
+     addon route `proxy.jsonl` correctly and what F7's bridge (started as
+     part of the unit graph below) needs to know which mitmproxy port to
+     relay to. Thread the slot index into the rendered `-recv-proxy.service`
+     unit's `ExecStart=` args.
+  5. Render I1's five unit files and write them to the systemd unit search
      path (e.g. `$XDG_CONFIG_HOME/systemd/user/` for a `--user` deployment,
      or the equivalent system path — match whatever K3's runbook settles
      on for supervising the two host-wide singletons; note this as a
      one-line TODO if undecided at this point rather than guessing).
-  5. Run `systemctl start agentvm-session-<id>.target` as a single call.
+  6. Run `systemctl start agentvm-session-<id>.target` as a single call.
 
 On failure, surface the failing unit's `systemctl status`/`journalctl`
 output to the caller and do not retry (spec §13.1's launch-time atomicity:
@@ -1262,11 +1346,15 @@ agentvm-session-<id>.target`, which cascades through I1's `BindsTo=` graph
 (vm unit stopping takes the three helper units with it, and vice versa).
 Graceful-then-SIGKILL is declarative (`TimeoutStopSec=`/`KillMode=` already
 set on the vm unit in I1) — this step is CLI wiring plus confirming the
-cascade actually behaves that way, not hand-rolled retry/kill logic.
+cascade actually behaves that way, not hand-rolled retry/kill logic. After
+`systemctl stop` returns, release this session's slot back to F4's
+allocator (clearing its entry in the slot-assignment file) so a later
+launch can reuse the port/uid-gid pair.
 
 Integration test (`needs_kvm`): launch, stop, confirm the firecracker
-process is actually gone (check the PID, not just unit/registry state) and
-`list` (I3) reflects the target as inactive.
+process is actually gone (check the PID, not just unit/registry state),
+`list` (I3) reflects the target as inactive, and the released slot is
+acquirable again by a subsequent launch.
 ```
 
 #### I6
@@ -1335,7 +1423,7 @@ each check.
 #### J1
 
 ```text
-Building on C3 (terminal.jsonl), F4 (proxy.jsonl), G6 (bpf.jsonl) — each
+Building on C3 (terminal.jsonl), F5 (proxy.jsonl), G6 (bpf.jsonl) — each
 currently writes its own ad hoc JSON shape. Add `transcript_schema.py`
 defining one shared model (a dataclass or pydantic model, matching
 whichever style the rest of `agentvm` already leans toward — check I1's
@@ -1344,14 +1432,14 @@ subsecond), session_id: str, stream: Literal["terminal","proxy","bpf"],
 event_type: str, payload: dict}`, plus one `write_event(fp, **kwargs)`
 helper that all three writers now call instead of hand-building JSON.
 
-Retrofit C3's recorder, F4's addon, and G6's receiver to import and use
+Retrofit C3's recorder, F5's addon, and G6's receiver to import and use
 this shared writer (payload becomes whatever stream-specific fields they
-already had — direction/base64 for terminal, method/host/status/etc for
-proxy, the raw BPF event dict for bpf). Update each chunk's existing unit
-tests only as needed to match the new shared field names (`stream`/
-`event_type`/`payload` wrapper) — do not change what information is
-captured, only its envelope. Add one new unit test per writer asserting the
-top-level envelope now conforms to the shared schema.
+already had — direction/base64 for terminal, method/host/status/resolved_ip/
+credential_injected/etc for proxy, the raw BPF event dict for bpf). Update
+each chunk's existing unit tests only as needed to match the new shared
+field names (`stream`/`event_type`/`payload` wrapper) — do not change what
+information is captured, only its envelope. Add one new unit test per
+writer asserting the top-level envelope now conforms to the shared schema.
 ```
 
 #### J2
@@ -1376,7 +1464,7 @@ in-memory representation.
 
 ```text
 Building on H5 (pid1-init's final exec target) and every earlier privileged
-setup step (B3 mounts, E3 device mounts, F5 shim spawn, G5 BPF loader
+setup step (B3 mounts, E3 device mounts, F6 shim spawn, G5 BPF loader
 spawn — all of which need root/elevated capabilities). Add the capability-
 drop step from spec §4 step 6 / §8: a pure function
 `build_cap_drop_plan(target_uid: u32) -> CapDropPlan` (a small struct
@@ -1445,13 +1533,16 @@ custom CGI wrapper), package registry strategy (explicitly still deferred
 decided per-ecosystem as needed and none were added in this plan), guest
 kernel config specifics and the vmlinux/bzImage + devtmpfs deviations
 (B1/B3), Nix closure isolation mechanism (H1's make-squashfs-based
-approach), vsock↔TCP shim implementation (F5's socat choice), vsock crate
+approach), vsock↔TCP shim implementation (F6's socat choice), vsock crate
 choice (C1's `nix` crate decision), eBPF load privilege (G5/K1's
-root-before-drop decision), and the systemd-unit-per-session/CLI/
-concurrency/config-source decisions (I1, spec §10.1-10.3). No code changes
-in this step — documentation only, but grep the actual final code to make
-sure every claim in the runbook matches what was actually built, not what
-was originally planned.
+root-before-drop decision), the systemd-unit-per-session/CLI/
+concurrency/config-source decisions (I1, spec §10.1-10.3), the shared
+per-session slot allocator backing both mitmproxy's port and jailer's
+uid/gid (F4, K5.2, spec §5.2.1/§12.2), and why `proxy.jsonl`/F7's relay are
+the one exception to the 100 MB growth-bounding cap (K5.1, spec §11.1). No
+code changes in this step — documentation only, but grep the actual final
+code to make sure every claim in the runbook matches what was actually
+built, not what was originally planned.
 ```
 
 #### K4
@@ -1480,62 +1571,69 @@ regression gate, per spec §14).
 #### K5.1
 
 ```text
-Building on F6's relay (`serve_guest_connections`), G6's `bpf_receiver.py`,
-F4's `transcript.py` addon, and C3's terminal.jsonl tee — retrofit the
-shared growth-bounding discipline from spec §11.1 onto all four:
+Building on G6's `bpf_receiver.py` and C3's terminal.jsonl tee — retrofit
+the shared growth-bounding discipline from spec §11.1 onto **only these
+two**:
 
-  - F6's relay: track total bytes relayed per accepted connection; once the
-    100 MB cap is reached, stop reading, close the accepted connection,
-    close/unlink the listening socket (`<uds_path>_<port>`), and exit — no
-    line-boundary concept applies here since this is a raw byte relay, not
-    a JSONL writer.
-  - G6's `bpf_receiver.py`: same cap/close/unlink/exit behavior, applied to
-    bytes written to `bpf.jsonl` — no JSONL-line-boundary special-casing,
-    so the final line past the cap may be truncated/invalid (this is a
-    deliberate backstop against guest-side abuse, not a data-integrity
-    feature, per spec §11.1).
+  - G6's `bpf_receiver.py`: track cumulative bytes written to `bpf.jsonl`;
+    once the 100 MB cap is reached, stop reading, close the accepted
+    connection, close/unlink the listening socket (`<uds_path>_<port>`),
+    and exit — no JSONL-line-boundary special-casing, so the final line
+    past the cap may be truncated/invalid (this is a deliberate backstop
+    against guest-side abuse, not a data-integrity feature, per spec
+    §11.1).
   - C3's terminal.jsonl tee: same cap/close/unlink/exit behavior on the
     `stdio_sock` reader.
-  - F4's mitmproxy addon: same 100 MB cap on `proxy.jsonl`, but implemented
-    as "stop appending once the cap is reached" rather than
-    close-a-socket-and-exit — mitmproxy is a shared, host-wide singleton
-    process (not a per-session listener), so there's no per-session socket
-    for this addon to close; note this distinction explicitly in a
-    comment rather than trying to force the same shape onto both.
 
-Confirm/set `Restart=no` on whichever of these are real systemd units at
-this point (F6/G6 become `agentvm-session-<id>-recv-proxy.service` /
-`-recv-bpf.service`, matching I1's naming, since K5.1 is the point these
-processes' behavior is finalized enough to template as units — extend
-I1's `units.py` renderers accordingly). C3's `-stdio.service` already got
-`Restart=no` from I1.
+**Deliberately excluded, do not add a cap to either of these:** F7's
+guest↔mitmproxy relay and F5's `proxy.jsonl` addon. Two different reasons,
+both from spec §11.1: F7 carries live HTTP(S) tunnel traffic, not a
+transcript — capping it would silently sever an in-progress legitimate
+transfer (e.g. cloning a large repo through the allowlisted git entry),
+a functional regression rather than a safety measure. F5's `proxy.jsonl`
+is the audit trail a real exfiltration attempt would show up in, and
+capping it risks truncating exactly that evidence at the worst possible
+moment. If you find yourself reaching for a "growth-bounding" change to
+either F5 or F7 while doing this step, that's a signal to stop and
+re-check this note rather than "completing the pattern."
+
+Confirm/set `Restart=no` on `recv-bpf` (`agentvm-session-<id>-recv-bpf.service`,
+matching I1's naming — I1 already rendered it with `Restart=no`; this step
+is the point its cap-enforcement behavior actually exists, so re-confirm
+the rationale in I1's unit still holds). C3's `-stdio.service` already got
+`Restart=no` from I1. `recv-proxy` keeps its `Restart=no` from I1 too, but
+for the general "nothing self-heals" reason only — it never gets any cap
+logic at all, in this step or later.
 
 Unit tests: a shared byte-counting/close-on-cap test helper (fake socket)
-reused across the F6/G6/C3 cases, asserting the read loop stops reading and
-closes/unlinks exactly at the cap; a file-size-cap test for F4's addon
-(stop-appending behavior, not close-socket). `needs_kvm` integration test:
-feed one receiver past 100 MB and confirm the file caps at exactly that
-size and the process has exited.
+reused across the G6/C3 cases, asserting the read loop stops reading and
+closes/unlinks exactly at the cap. `needs_kvm` integration test: feed one
+receiver past 100 MB and confirm the file caps at exactly that size and the
+process has exited.
 ```
 
 #### K5.2
 
 ```text
 Building on I1's `render_vm_service` (currently one fixed, shared jailer
-uid/gid for every session). Add a small uid/gid allocator sized to
-`max_concurrent_sessions` (I1's config): a pool of `max_concurrent_sessions`
-distinct (uid, gid) pairs, one checked out per concurrently-running
-session and released back to the pool when its target stops (spec §12.2 —
-jailer's own `setuid`/`setgid` drop needs a *unique* uid/gid per
-concurrent session to mean anything as an isolation boundary; one shared
-uid across sessions means two concurrent sessions' processes could
-`ptrace`/signal/see each other). Thread the allocated uid/gid into I2's
-`launch` pipeline when calling `render_vm_service`.
+uid/gid for every session) and F4's slot allocator (`slots.py`) — **do not
+build a second pool.** Add `slot_to_uid_gid(slot: int) -> tuple[int, int]`,
+a pure deterministic function deriving a unique (uid, gid) pair from the
+same slot index I2 already acquires from F4's allocator and records in the
+slot-assignment file (used since I2 for `proxy.jsonl` routing and F7's
+relay target). This is the *same* per-session concurrency-slot concept
+backing two resources now (spec §12.2 — jailer's own `setuid`/`setgid` drop
+needs a *unique* uid/gid per concurrent session to mean anything as an
+isolation boundary; one shared uid across sessions means two concurrent
+sessions' processes could `ptrace`/signal/see each other), not two
+independent pools that could drift out of sync. Thread `slot_to_uid_gid`'s
+result into I2's `launch` pipeline when calling `render_vm_service`,
+alongside the slot index it already threads into `-recv-proxy.service`.
 
-Unit test: an allocator given `max_concurrent_sessions=N` hands out N
-distinct pairs, refuses (or blocks/errors clearly) on an `(N+1)`th checkout
-while all N are held, and correctly reuses a released pair after it's
-freed.
+Unit test: `slot_to_uid_gid` is deterministic and injective over
+`[0, max_concurrent_sessions)` (no two slots in range map to the same pair)
+— no new pool/allocator logic to test here, since F4 already covers
+acquire/release/reuse.
 ```
 
 #### K5.3

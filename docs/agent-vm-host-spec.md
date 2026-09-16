@@ -130,13 +130,45 @@ captures (§7.1), independent of allowlist/proxy enforcement.
 - **Credential injection:** the guest is configured with a placeholder API
   key. A mitmproxy addon replaces the `Authorization` header with the real
   Anthropic API key only for the allowlisted Anthropic API destination, on
-  the way out. The real key never exists in guest memory or filesystem.
+  the way out. The real key never exists in guest memory or filesystem. The
+  same addon tags the flow (e.g. `flow.metadata["credential_injected"]`)
+  with whether it actually performed the swap for that request — an audit
+  signal §11's transcript addon records, independent of the (always
+  redacted) header value itself.
 - Chosen over a custom Rust proxy or Squid specifically for feature fit:
   mitmproxy already provides scriptable allowlisting and header rewriting
   with minimal custom code, despite not matching the Rust/Go/C preference
   order for the rest of the stack.
 - Runs as its own host-wide singleton systemd service, independent of any
   session's lifecycle — see §10.1.
+
+#### 5.2.1 Per-session listen ports (for splitting `proxy.jsonl` by guest)
+
+mitmproxy is one host-wide process serving every concurrently-running
+session, so a single shared listen port gives its addons no way to tell
+which session a given flow belongs to. Fix: mitmproxy binds one additional
+TCP listen port per **concurrency slot** — a fixed pool of size
+`max_concurrent_sessions` (§10.3), the same sizing pattern already used for
+the hugepage pool (§12.1). A session acquires a free slot at `launch` and
+releases it at `stop`; that slot's index is the *same* resource-allocation
+concept §12.2 uses for jailer's per-session uid/gid (one shared slot
+allocator, not two independent pools — see §12.2's note).
+
+Each session's guest-facing bridge (§5.1, §6.1.1's counterpart on the
+proxy path) is told its assigned slot at process start and relays to
+`127.0.0.1:<mitm_base_port + slot>` instead of one fixed port. mitmproxy's
+transcript addon (§11) resolves a flow's session by reading the local port
+the connection arrived on (`flow.client_conn.sockname`) and looking it up
+against a small on-disk slot-assignment file (session_id + session_dir per
+slot) that `launch`/`stop` keep current — necessary because the mapping
+changes over a session's lifetime while mitmproxy itself is a long-lived
+singleton that never restarts between sessions.
+
+> **Implementation note:** confirm mitmproxy supports multiple simultaneous
+> listen addresses in one process (multiple `mode` entries, available in
+> recent mitmproxy versions) before committing to this — if it doesn't,
+> the fallback is one mitmproxy instance per slot instead of per host, which
+> would change the "host-wide singleton" framing in §10.1.
 
 ### 5.3 What's on the allowlist
 
@@ -347,10 +379,12 @@ transaction via a wrapping target:
   units below (any one of them stopping — including a deliberate self-stop
   — stops this unit too, §13.2); `After=` the same three, so they're
   listening before the VM boots and starts talking.
-- **`agentvm-session-<id>-recv-proxy.service`**,
-  **`agentvm-session-<id>-recv-bpf.service`** — the two guest-initiated
-  transcript receivers (§11.1). `PartOf=agentvm-session-<id>-vm.service`
-  (stopping the VM stops these too — one-way, the reverse of `BindsTo=`).
+- **`agentvm-session-<id>-recv-proxy.service`** — the guest-initiated
+  proxy-tunnel relay to mitmproxy (§5.1, §5.2.1; *not* a transcript writer —
+  see §11.1), and **`agentvm-session-<id>-recv-bpf.service`** — the
+  guest-initiated BPF transcript receiver (§11.1). `PartOf=agentvm-session-
+  <id>-vm.service` (stopping the VM stops these too — one-way, the reverse
+  of `BindsTo=`).
 - **`agentvm-session-<id>-stdio.service`** — the interactive stdio bridge:
   host-initiated connection to the guest's interactive vsock port,
   `attach.sock` fan-out, and (§11.1) the `terminal.jsonl` tee. `PartOf=`
@@ -443,7 +477,15 @@ units created, nothing started, §13.3) if already at the cap.
 - Per session, a directory containing **separate newline-delimited JSON
   files per stream**:
   - `terminal.jsonl` — timestamped stdin/stdout chunks.
-  - `proxy.jsonl` — request/response summaries from mitmproxy.
+  - `proxy.jsonl` — request/response summaries from mitmproxy: destination
+    host/port as requested, the **resolved IP address** mitmproxy actually
+    connected to (the host does the real DNS resolution — §5.1.1 — so this
+    is the closest thing to a guest-side DNS answer that exists), and
+    whether the real credential was injected for that request (§5.2's
+    `credential_injected` flag) — deliberately *not* redacted-away like the
+    header value itself, since knowing *when* the secret went out is the
+    point. Split into one file per session via §5.2.1's per-slot listen
+    ports, since mitmproxy itself is a host-wide singleton.
   - `bpf.jsonl` — raw BPF events (§7.2).
 - Each line carries a common schema (timestamp, session ID, stream/event
   type, payload) so the files are **directly queryable via DuckDB**
@@ -455,11 +497,12 @@ units created, nothing started, §13.3) if already at the cap.
 
 ### 11.1 Per-stream receivers
 
-**Delivery mechanism:** `proxy.jsonl` and `bpf.jsonl` are each written by
-their own small, dedicated host-side receiver process (§10.1's
-`recv-proxy`/`recv-bpf` units) — one per stream, deliberately kept separate
-rather than a single multiplexed process, to avoid any need for
-stream-routing logic. Each receiver:
+**`bpf.jsonl` only** is written by a small, dedicated host-side receiver
+process (§10.1's `recv-bpf` unit). `proxy.jsonl` is *not* produced this
+way — it's written by mitmproxy's own transcript addon (a long-lived
+host-wide singleton, §5.2), split per-session via §5.2.1's slot ports, and
+is deliberately **not** subject to the cap/receiver discipline below (see
+the callout at the end of this section for why). `recv-bpf`:
 
 - is pre-configured with exactly one session's vsock path. Firecracker's
   vsock device is a Unix-domain-socket proxy, not real kernel AF_VSOCK
@@ -495,6 +538,20 @@ interactive stdio connection (needed regardless, to support `attach`/
 state**; detaching a CLI client never touches the underlying guest
 connection or any other attached client. The same 100 MB hard-cap policy
 above applies to this tap as well.
+
+**Why `proxy.jsonl` (and the live proxy tunnel itself) are exempt from the
+cap:** two different things are involved and both are deliberately
+uncapped. First, `recv-proxy` (§5.1, §5.2.1) is a pure byte relay carrying
+the guest's actual live HTTP(S) traffic to mitmproxy — capping it like a
+transcript receiver would silently sever an in-progress legitimate
+transfer (e.g. cloning a large repo through the allowlisted git entry),
+which is a functional regression, not a safety win. Second, mitmproxy's
+own addon is what writes `proxy.jsonl`, and it stays uncapped so that
+exactly the scenario this audit trail exists to catch — a large or
+sustained exfiltration attempt — is never the reason its own tail gets
+truncated. `bpf.jsonl` and `terminal.jsonl` are comparatively low-volume,
+compact event/byte streams where a 100 MB abuse backstop doesn't carry the
+same risk of discarding the most important record.
 
 > **Open wire-level detail** (§15): whether the interactive stdio channel
 > and the terminal-transcript tap are literally the same vsock connection
@@ -566,10 +623,14 @@ supervised by a bespoke daemon.
 
 What jailer alone provides: chroot via `pivot_root` into
 `<chroot_base>/<exec_file_name>/<id>/root`; always a new mount namespace; a
-`setuid`/`setgid` drop to a **unique uid/gid per concurrent session**. It
-does *not* provide, without extra flags: restart/liveness supervision,
-stdout/stderr capture, declarative resource limits, or guaranteed cleanup
-on crash — systemd supplies all of these on top:
+`setuid`/`setgid` drop to a **unique uid/gid per concurrent session**. The
+uid/gid pair is derived from the same per-session **concurrency slot**
+§5.2.1 allocates for mitmproxy's per-session listen port — one shared slot
+allocator (sized by `max_concurrent_sessions`, §10.3) backing both
+resources, not two independent pools. It does *not* provide, without extra
+flags: restart/liveness supervision, stdout/stderr capture, declarative
+resource limits, or guaranteed cleanup on crash — systemd supplies all of
+these on top:
 
 - `Delegate=yes` on the VM unit lets systemd own the top of the cgroup
   subtree while jailer creates its own nested cgroup underneath for the
@@ -809,15 +870,32 @@ landed in):
 - **Process isolation model** (§12.2) — jailer run as a systemd unit
   (`Delegate=yes`, `--cgroup-version 2`), not a bespoke daemon-supervised
   subprocess.
-- **Transcript stream delivery & growth bounding** (§11.1) — three (not
-  one multiplexed) per-session receiver processes, hard 100 MB cap per
-  file, authenticated structurally by Firecracker's dedicated-`uds_path`-
-  per-VM model rather than any CID lookup.
+- **Transcript stream delivery & growth bounding** (§11.1) — **revised.**
+  `terminal.jsonl`/`bpf.jsonl` each get a dedicated per-session
+  receiver/tap process with a hard 100 MB cap, authenticated structurally
+  by Firecracker's dedicated-`uds_path`-per-VM model rather than any CID
+  lookup. `proxy.jsonl` is produced differently (mitmproxy's own addon, a
+  host-wide singleton) and is deliberately **uncapped**, along with the
+  live proxy relay itself — capping either risked truncating exactly the
+  audit trail this design exists to preserve, or silently killing
+  legitimate large transfers (see §11.1's callout).
 - **Inactivity watchdog** (§11.2) — 10-minute combined-silence threshold,
   implemented via transcript-file mtimes and a per-session systemd timer,
   reusing the existing stop cascade rather than a separate kill path.
 - **cgroup version** (§2) — v2 only, no v1 support anywhere in this
   subsystem.
+- **`proxy.jsonl` per-session split** (§5.2.1, §11) — mitmproxy (a
+  host-wide singleton) binds one TCP listen port per concurrency slot; a
+  slot-assignment file maps the local port a flow arrived on to a
+  session_id/session_dir, since mitmproxy itself never restarts between
+  sessions. The same slot index also backs §12.2's per-session jailer
+  uid/gid — one shared allocator, sized by `max_concurrent_sessions`, not
+  two independent pools.
+- **`proxy.jsonl` content: resolved IP + credential-injection audit**
+  (§5.2, §11) — added the destination IP mitmproxy actually connected to
+  (the host's own DNS resolution result, §5.1.1) and a
+  `credential_injected` boolean from F3's addon, so the log records *when*
+  the real key went out without ever containing its value.
 
 Still open:
 
@@ -834,9 +912,11 @@ Still open:
   actual configuration (zram root, no swap partition currently defined).
 - **Terminal-transcript wire-level mechanism** (§11.1) — whether recording
   taps the same host-initiated connection used for interactive attach, or
-  becomes a second, guest-initiated logging push symmetric with
-  proxy/bpf's receivers, is not fully pinned down.
-- **Chunk I re-specification** — I1–I8 in `todo.md` still describe the
-  superseded daemon/registry/RPC design (§10.1's "Host daemon / CLI process
-  model" decision above) and need rewriting against the systemd-unit model
-  before implementation starts there.
+  becomes a second, guest-initiated logging push symmetric with bpf's
+  receiver, is not fully pinned down.
+- **mitmproxy multi-listener support** (§5.2.1) — needs confirming that a
+  single mitmproxy process can bind multiple simultaneous listen addresses
+  (one per concurrency slot) before implementation starts on the
+  `proxy.jsonl`-per-session-split mechanism; if it can't, the fallback is
+  one mitmproxy instance per slot instead of one host-wide singleton,
+  changing §10.1's "host-wide singleton" framing for that service.

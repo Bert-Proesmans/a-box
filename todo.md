@@ -136,26 +136,34 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
   - [ ] Unit tests (`tflow`/`taddons`): allow domain, deny domain, allow loopback port, deny other loopback port, deny private range, deny `git-receive-pack` path to allowlisted loopback entry
 - [ ] **F3 — Credential injection addon**
   - [ ] `credentials.py`: real key (read from host-local file, not env var) swapped into `Authorization` only for the exact Anthropic destination
-  - [ ] Unit tests: matching destination rewritten; non-matching destination's header untouched
-- [ ] **F4 — proxy.jsonl transcript addon**
-  - [ ] `transcript.py`: summarized record per request, including denied ones (`status_code: null`)
+  - [ ] Tags the flow with `credential_injected: bool` (spec §5.2) for F5's transcript addon to record
+  - [ ] Unit tests: matching destination rewritten + flag `True`; non-matching destination's header untouched + flag `False`
+- [ ] **F4 — Shared per-session slot allocator**
+  - [ ] `slots.py`: `acquire_slot`/`release_slot` over `[0, max_concurrent_sessions)`, persisted so it survives across separate CLI invocations (spec §5.2.1/§12.2)
+  - [ ] No dependents yet at this point — used later by F5 (mitmproxy port lookup), F7 (relay target), and K5.2 (jailer uid/gid), one allocator not three
+  - [ ] Unit tests: N distinct slots up to the max; clear error at cap; freed slot reusable
+- [ ] **F5 — proxy.jsonl transcript addon**
+  - [ ] `transcript.py`: resolves session_id per-flow from the local arrival port (`flow.client_conn.sockname`) via the slot-assignment file, writes to that session's own `proxy.jsonl` (spec §5.2.1 — mitmproxy is a host-wide singleton, this is what splits the log by guest)
+  - [ ] Fields: timestamp, session_id, method, host, port, path, status_code (or null if denied), duration_ms, byte sizes, **`resolved_ip`** (mitmproxy's own upstream connection info), **`credential_injected`** (from F3)
   - [ ] Mandatory Authorization redaction on every record, allowed or denied
-  - [ ] Unit tests: allowed record shape, denied record shape, secret value never present in serialized output
-- [ ] **F5 — Guest vsock↔TCP shim**
+  - [ ] **No size cap** (spec §11.1 — deliberately excluded from K5.1, this is the audit trail an exfiltration attempt would show up in)
+  - [ ] Unit tests: per-session file routing via fixture slot mapping; `resolved_ip`/`credential_injected` present and correct; secret value never present in serialized output; no cap-related logic exists
+- [ ] **F6 — Guest vsock↔TCP shim**
   - [ ] pid1 spawns `socat` (`TCP-LISTEN` loopback → `VSOCK-CONNECT` host-CID:`PROXY_PORT`) before stdio accept
-  - [ ] Static `socat` bundled into device1 image via `pkgsStatic.socat` (decided, see spec §12 — fall back to a custom shim only if this fails in practice)
+  - [ ] Static `socat` bundled into device1 image via `pkgsStatic.socat` (decided, see spec §15 — fall back to a custom shim only if this fails in practice)
   - [ ] Pure unit test of constructed argv
-  - [ ] Integration test present (may be folded into F6/F8 — note where)
-- [ ] **F6 — Host vsock↔mitmproxy bridge**
-  - [ ] `serve_guest_connections`: bind `<uds_path>_<port>`, accept-loop, relay to mitmproxy's TCP listener
-  - [ ] Unit tests: relay correctness via fake TCP echo server; concurrent connections not serialized
-- [ ] **F7 — Wire git service into allowlist**
+  - [ ] Integration test present (may be folded into F7/F9 — note where)
+- [ ] **F7 — Host vsock↔mitmproxy bridge**
+  - [ ] `serve_guest_connections`: bind `<uds_path>_<port>`, accept-loop, relay to `127.0.0.1:<mitm_base_port + slot>` (the session's F4-assigned slot, spec §5.2.1)
+  - [ ] Pure byte relay: does not write `proxy.jsonl` itself (F5 does) and gets **no byte cap** (spec §11.1 — capping it would sever legitimate large transfers)
+  - [ ] Unit tests: relay correctness via fake TCP echo server, parametrized by slot; concurrent connections not serialized
+- [ ] **F8 — Wire git service into allowlist**
   - [ ] `build_allowlist()` helper: Anthropic entry + git-loopback entry (with `deny_paths_containing`)
   - [ ] Unit test: exactly two entries, correct shapes
-- [ ] **F8 — Full egress end-to-end test**
-  - [ ] Real `GitHttpBackendServer` + real mitmproxy (F2–F4 addons) + fake allowlisted HTTPS test server + F6 bridge + real VM w/ F5 shim + empty `resolv.conf`
+- [ ] **F9 — Full egress end-to-end test**
+  - [ ] Real `GitHttpBackendServer` + real mitmproxy (F2/F3/F5 addons) on a fixture slot + fake allowlisted HTTPS test server + F7 bridge + real VM w/ F6 shim + empty `resolv.conf`
   - [ ] `echo_agent` extended: `curl-allowed` / `curl-denied` / `git-fetch` / `dns-lookup`
-  - [ ] Assertions: allowed succeeds; denied fails + logged; git-fetch succeeds; DNS lookup fails fast (no hang)
+  - [ ] Assertions: allowed succeeds with correct `resolved_ip`/`credential_injected` in that session's `proxy.jsonl`; denied fails + logged; git-fetch succeeds; DNS lookup fails fast (no hang)
 
 ## Chunk G — eBPF monitoring
 
@@ -262,7 +270,7 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
 
 - [ ] **J1 — Shared schema + retrofit**
   - [ ] `transcript_schema.py`: shared envelope `{timestamp, session_id, stream, event_type, payload}` + `write_event` helper
-  - [ ] Retrofit C3 (terminal), F4 (proxy), G6 (bpf) writers onto it
+  - [ ] Retrofit C3 (terminal), F5 (proxy), G6 (bpf) writers onto it
   - [ ] Existing unit tests updated for new envelope; captured information unchanged
 - [ ] **J2 — DuckDB cross-file query test**
   - [ ] Fixture jsonl files (via `write_event` or a real launch)
@@ -277,14 +285,15 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
   - [ ] `needs_kvm` integration test: `/proc/self/status` shows non-zero Uid, all-zero CapEff, over the stdio channel
 - [ ] **K2 — Full hermetic end-to-end scenario test**
   - [ ] Deterministic stub agent (swappable via H5 build flag): reads + appends to a known file
-  - [ ] Daemon started first as its own process, then driven purely through the CLI: `launch` → poll `list` until stopped → `review` (diff correct)
+  - [ ] Driven purely through the real CLI commands (`launch`/`list`/`attach`/`stop`/`review`) — no daemon to start first, `launch` itself renders and starts the systemd unit graph
   - [ ] `terminal.jsonl`, `proxy.jsonl` (no disallowed destinations), `bpf.jsonl` (exec + write file_open events) all checked
-  - [ ] Second `launch` while at concurrency cap (I7) is rejected
-  - [ ] Low `timeout_seconds` session is auto-stopped by reaping (I6)
-- [ ] **K3 — Runbook & §12 decision record**
-  - [ ] `agent-vm/README.md`: image rebuild triggers, full CLI reference (incl. `daemon`/`reap`), transcript stream locations + DuckDB one-liner
-  - [ ] Write the daemon's `systemd --user` unit (the one item spec §12 still lists as open)
-  - [ ] "Decisions made" section covering every entry in spec §12's decisions log: git-http-backend wrapper, package-registry strategy (explicitly left deferred), kernel config fragment + vmlinux/bzImage + devtmpfs deviations, closure isolation mechanism, vsock shim choice, vsock crate choice (`nix`, not `vsock`), eBPF load privilege (root before cap-drop), daemon/RPC/concurrency/config-source decisions
+  - [ ] Second `launch` while at concurrency cap (I6) is rejected
+  - [ ] Low `timeout_seconds` session is auto-stopped via `RuntimeMaxSec=` (I1) — no reap task exists in this design
+- [ ] **K3 — Runbook & §15 decision record**
+  - [ ] `agent-vm/README.md`: image rebuild triggers, full CLI reference as of this chunk (`launch`/`list`/`attach`/`detach`/`stop`/`review`/`transcript`/`doctor` — no `daemon`/`reap` commands exist), transcript stream locations + DuckDB one-liner (I7)
+  - [ ] Note: K4/K5 below extend this runbook incrementally as they land, rather than one big rewrite at the end that risks going stale
+  - [ ] "Decisions made" section covering every entry in spec §15's decisions log: git-http-backend wrapper, package-registry strategy (explicitly left deferred), kernel config fragment + vmlinux/bzImage + devtmpfs deviations, closure isolation mechanism, vsock shim choice (F6's socat), vsock crate choice (`nix`, not `vsock`), eBPF load privilege (root before cap-drop), the systemd-unit-per-session/CLI/concurrency/config-source decisions (I1, spec §10.1-10.3), the shared per-session slot allocator backing both mitmproxy's port and jailer's uid/gid (F4, K5.2, spec §5.2.1/§12.2), and why `proxy.jsonl`/F7's relay are the one exception to the 100 MB growth-bounding cap (K5.1, spec §11.1)
+  - [ ] Every runbook claim checked against actual final code, not the original plan
   - [ ] Every runbook claim checked against actual final code, not the original plan
 - [ ] **K4 — Hugepages** (per [firecracker's hugepages.md](https://github.com/firecracker-microvm/firecracker/blob/main/docs/hugepages.md))
   - [x] Mode decided: `2M` (pre-allocated hugetlbfs pool), despite snapshotting being explicitly out of scope — chosen over `None`/`Transparent` regardless
@@ -296,14 +305,14 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
 - [ ] **K5 — Production host hardening** ([firecracker prod-host-setup.md](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md))
   - [ ] Host kernel: `quiet loglevel=1` on the host's own boot cmdline (llm-host.nix), not the guest's; keep host kernel/microcode current via the normal NixOS update path
   - [ ] Firecracker invocation: never pass `--seccomp-filter`/`--no-seccomp` (keep the built-in default filters); add `8250.nr_uarts=0` to the *guest* kernel_args once the real agent (H5) no longer needs the console for liveness/debugging, or otherwise rate-limit/null-redirect console output in production
-  - [ ] `terminal.jsonl`/`bpf.jsonl`/`proxy.jsonl` growth is bounded (rotation or size cap) rather than unbounded append-forever, per the "bounded storage for logs" recommendation
+  - [ ] `terminal.jsonl`/`bpf.jsonl` growth is bounded (100 MB hard cap, close+exit) rather than unbounded append-forever, per the "bounded storage for logs" recommendation. `proxy.jsonl` and the guest-facing proxy relay are deliberately **excluded** (spec §11.1): capping the relay would sever legitimate large transfers, capping the log risks truncating the exact exfiltration evidence it exists to catch
   - [ ] Host-side watchdog: kill the session after **10 minutes of no output activity on any channel** (terminal/proxy/bpf combined - not a per-channel independent timeout, and orthogonal to I6's total wall-clock session timeout). Minimal design, no new IPC: each stream's receiver (K5 growth-bounding item) already only writes its `.jsonl` file when real bytes arrive, so the file's mtime *is* the last-activity signal for free - receiver touches/creates its file immediately on startup (before any real byte) so "nothing yet" doesn't read as already-idle. A per-session `systemd.timer` (companion unit, `PartOf=` back to the VM unit so it never outlives the session) polls every ~60s: take `max(mtime)` across the three files, and if `now - max(mtime) > 600s`, `systemctl stop` one of the three receiver units - reuses the already-decided `BindsTo=` cascade (VM unit stops when any receiver stops) instead of inventing a separate "stop the VM" path. `needs_kvm` integration test: idle VM (no terminal/proxy/bpf traffic) gets stopped at the 10-minute mark; an active one doesn't
-  - [ ] Jailer or equivalent: run firecracker chrooted under a dedicated non-privileged uid/gid per session (one unique uid/gid per concurrent VM), with `--exec-file`/`--chroot-base-dir`/`--netns` unwritable by unprivileged users
+  - [ ] Jailer or equivalent: run firecracker chrooted under a dedicated non-privileged uid/gid per session, derived from chunk F's shared per-session slot allocator (F4) rather than a second pool — one unique uid/gid per concurrent VM, with `--exec-file`/`--chroot-base-dir`/`--netns` unwritable by unprivileged users
   - [ ] **OPEN QUESTION:** Resource limits per VM via cgroups/jailer: `blkio.throttle.io_serviced` + `io_service_bytes`, `memory.limit_in_bytes` (+ `memsw`/soft limit), `cpu.shares` + `cpu.cfs_period_us`/`cfs_quota_us`, jailer `fsize`/`no-file` - now that jailer runs under a systemd unit (K5 decision), these need mapping onto concrete unit directives (`MemoryMax=`, `CPUQuota=`, `IOWeight=`/`IOReadBandwidthMax=`, `Delegate=yes`) vs. left as jailer's own raw `--cgroup`/`--resource-limit` flags - undecided which authority owns which knob
   - [ ] KVM/host tuning: lower `kvm min_timer_period_us` (modprobe config), move `kvm-pit` kernel threads into each VM's cgroup, disable SMT or otherwise document the tenant-isolation tradeoff for this host, `kvm.nx_huge_pages=never` or cgroups `favordynmods` (kernel 6.1+) — interacts with K4: `nx_huge_pages` splitting can shatter the `2M`-mode EPT mappings for executable guest memory regardless of hugetlbfs backing, undermining the reason `2M` was picked
   - [ ] `min_timer_period_us` and `favordynmods` made explicit in host config (llm-host.nix), not just applied ad hoc: `boot.extraModprobeConfig` (or equivalent) for `options kvm min_timer_period_us=<N>`, and the cgroup v2 remount (`-o remount,favordynmods`) wired as a systemd unit/mount option rather than a manual one-off command
   - [ ] `kvm-pit` thread cgroup placement is **not automatic** — verified against current kernel source (`arch/x86/kvm/i8254.c`'s `kvm_create_pit()` calls `kthread_run_worker(0, "kvm-pit/%d", pid_nr)`; per `kernel/kthread.c`, every kthread is actually forked from the global `kthreadd` (PID 2) context via `create_kthread()`, not from the calling process — the `%d` in the name is just the creator's PID for human identification, not a real parent/cgroup relationship). systemd's `Delegate=yes` cannot reach it: delegation only covers processes forked from the unit's own tree, and `kvm-pit` never is one. Needs an `ExecStartPost=` script on the VM unit: locate the `kvm-pit/<tid>` task (scan `/proc/*/comm` for a TID under firecracker's own `/proc/<pid>/task/`), write its PID into the unit's delegated `cgroup.procs`. Two open risks to test, not assume: (a) timing — PIT creation is lazy (on first guest PIT access), so a single-shot poststart grep may race it; needs a short retry/poll rather than a one-off check; (b) whether a kernel-thread PID can be freely migrated via `cgroup.procs` on this kernel the way a normal process can (no blocking cgroup v2 doc text found either way — cgroup v1 had known quirks moving kthreads for some controllers). `needs_kvm`+`needs_root` integration test: boot a VM, confirm the poststart script finds and moves the thread, confirm via `cpu.stat`/`systemd-cgtop` that its CPU time now attributes to the VM's cgroup
   - [ ] **OPEN QUESTION:** Host memory: disable swap (or secure swap) so guest memory is never paged to disk; disable KSM to prevent cross-VM page-dedup side channels - not yet discussed at all against llm-host.nix's actual config (zram root, no swap partition currently defined)
-  - [ ] Network egress hardening (builds on chunk F): **no TAP/virtio-net device exists in this design at all (spec §3)** — the earlier "rate-limit the guest's network interface, drop TAP traffic to IMDS" wording was generic Firecracker prod-host-setup.md advice that doesn't apply here and is corrected. All egress is vsock→host-UDS→mitmproxy (§5); there's no IP-layer path to `169.254.169.254` (or anywhere else) to block, since there's no network interface for the guest to route through. What still applies: (a) confine the firecracker+jailer systemd unit itself with `PrivateNetwork=yes`/`IPAddressDeny=any` — it has no legitimate network need, only a local vsock UDS; (b) rate-limiting the live proxied HTTP traffic (not the transcript logs, which K5's growth-bounding item already covers) has no Firecracker-API mechanism to lean on (verified: the `Vsock` device schema has no rate-limiter field, unlike `drives`/`network-interfaces`) — must happen in host software, e.g. the F6 relay loop or a mitmproxy addon, if wanted at all
+  - [ ] Network egress hardening (builds on chunk F): **no TAP/virtio-net device exists in this design at all (spec §3)** — the earlier "rate-limit the guest's network interface, drop TAP traffic to IMDS" wording was generic Firecracker prod-host-setup.md advice that doesn't apply here and is corrected. All egress is vsock→host-UDS→mitmproxy (§5); there's no IP-layer path to `169.254.169.254` (or anywhere else) to block, since there's no network interface for the guest to route through. What still applies: (a) confine the firecracker+jailer systemd unit itself with `PrivateNetwork=yes`/`IPAddressDeny=any` — it has no legitimate network need, only a local vsock UDS; (b) rate-limiting the live proxied HTTP traffic (a throughput concern, distinct from the terminal/bpf size caps K5's growth-bounding item covers — `proxy.jsonl`/the relay are excluded from those, see above) has no Firecracker-API mechanism to lean on (verified: the `Vsock` device schema has no rate-limiter field, unlike `drives`/`network-interfaces`) — must happen in host software, e.g. the F7 relay loop or a mitmproxy addon, if wanted at all
   - [ ] Hardware vulnerability posture: `spectre-meltdown-checker` output is surfaced through the new `agentvm doctor` subcommand (spec §10.1), not just a one-off manual run; K3 runbook still records the baseline result and vendor-specific (Intel/AMD) mitigation guidance to revisit on host CPU changes
   - [ ] Explicitly out of scope for a single-operator host (record in K3's decision log rather than implementing): per-instance uid/gid *fleet* management beyond what one concurrent-session cap needs, and the ARM-only `KVM_CAP_COUNTER_OFFSET` check (this host is x86_64)
