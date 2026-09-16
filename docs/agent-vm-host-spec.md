@@ -30,6 +30,12 @@ and the outside world.
 - No new dedup/snapshot filesystem (ZFS/btrfs-CoW) is required for this
   subsystem specifically — see §6.3 for how image reuse is achieved instead.
   Continue using the existing btrfs pool for general storage.
+- **cgroup v2 only, never v1.** This host mounts the unified v2 hierarchy
+  exclusively (verified: `/sys/fs/cgroup/cgroup.controllers` present, no v1
+  hierarchy mounted). Every cgroup-touching piece of this subsystem (jailer's
+  `--cgroup-version`, systemd unit resource directives, the `kvm-pit`
+  poststart placement, §12.4) must target v2 — no v1 fallback path is to be
+  built or supported.
 
 ## 3. VMM: Firecracker
 
@@ -129,6 +135,8 @@ captures (§7.1), independent of allowlist/proxy enforcement.
   mitmproxy already provides scriptable allowlisting and header rewriting
   with minimal custom code, despite not matching the Rust/Go/C preference
   order for the rest of the stack.
+- Runs as its own host-wide singleton systemd service, independent of any
+  session's lifecycle — see §10.1.
 
 ### 5.3 What's on the allowlist
 
@@ -170,7 +178,9 @@ captures (§7.1), independent of allowlist/proxy enforcement.
   never leaves the host's own loopback. It's configured to expose only the
   `upload-pack` service (fetch/clone/`ls-remote`); `receive-pack` is not
   wired up at all. **That is the actual read-only enforcement — it lives in
-  the git server's config, not the proxy.**
+  the git server's config, not the proxy.** Runs as its own host-wide
+  singleton systemd service, independent of any session's lifecycle — see
+  §10.1.
 - Device 2 (§6.2) is built as a **shallow clone (`--depth=1`)** of the
   pinned commit from the local mirror, not a bare file export. This gives
   the guest a real (tiny) `.git` directory with exactly one remote
@@ -198,7 +208,7 @@ captures (§7.1), independent of allowlist/proxy enforcement.
   agent must not reach a git process that manages the full history/blob
   store directly.
 - Server-side wrapping of `git-http-backend` (CGI runner vs. a small custom
-  wrapper) remains an open implementation choice — see §12.
+  wrapper) remains an open implementation choice — see §15.
 
 ### 6.2 Three-block-device layout per guest
 
@@ -253,7 +263,9 @@ via host-side CoW filesystem tricks.
 
 - The receiver is intentionally **simple: it appends incoming JSONL events
   directly to a per-session log file.** No database, no real-time alerting
-  pipeline in this version.
+  pipeline in this version. It is one of the three per-session transcript
+  receivers described in §11.1, including that section's growth-bounding
+  policy.
 - **Violation response: log + alert only, no automatic action.** Flagged
   events are recorded and surfaced for review, but a session is never
   auto-killed on a BPF-observed event in this version — this avoids
@@ -295,70 +307,121 @@ added on top of the VM boundary + BPF visibility.
 
 - **Language: Python**, chosen for mature libraries around calling
   Firecracker's REST API (over its control Unix socket), subprocess/tool
-  wrapping (git, nix, mkfs, mount), and general orchestration maturity.
-- **Resource allocation:** fixed small default per guest (e.g. 1–2 vCPU,
-  1–2 GB RAM), not configurable per task in this version. The host enforces
-  a **host-wide cap on concurrent VMs**, rejecting new launches beyond it
-  until a running session finishes.
+  wrapping (git, nix, mkfs, mount), and general orchestration maturity. It
+  now backs a CLI plus a handful of small per-unit helper scripts, not a
+  daemon (§10.1).
+- **Resource allocation:** fixed small default per guest — **250 MiB RAM**
+  (decided; sized to fit hugetlbfs 2M-page pool allocation, §12.1), vCPU
+  count still an example (e.g. 1–2 vCPU) — not configurable per task in
+  this version. The host enforces a **host-wide cap on concurrent VMs**,
+  rejecting new launches beyond it until a running session finishes (§10.3).
 - **Timeouts:** every session has a fixed maximum wall-clock duration (an
-  adjustable default, e.g. a few hours), after which the host force-stops it
-  automatically. A session can also be killed manually at any time via the
-  CLI.
+  adjustable default, e.g. a few hours), enforced declaratively via
+  systemd's `RuntimeMaxSec=` on the VM's own unit (§10.1) — no periodic
+  reap process is needed for this. A session can also be killed manually at
+  any time via the CLI. A separate, shorter **inactivity** timeout also
+  applies — see §11.2.
 
-### 10.1 Daemon / CLI split
+### 10.1 No central daemon — the CLI steers systemd directly
 
-Session state (a running VM's Firecracker handle, its persistent stdio
-vsock connection, its proxy/BPF vsock bridges) must outlive any single CLI
-invocation — `launch` returns to the shell immediately, and `list`/`attach`/
-`stop` are separate, later process invocations. This requires a long-lived
-process to actually own that state:
+**Superseded design decision** (§15): the originally-specified single
+long-running host daemon owning all session state is dropped. Chunk K5's
+jailer + systemd wiring already gives each session's process lifecycle,
+resource limits, restart/cleanup and log capture to systemd; a second,
+custom-built supervisor duplicating that job added a layer with no
+independent value, and a second place for the two to disagree. (Precedent:
+a security audit of a jailer-less firecracker setup independently converged
+on "jailer plus systemd system-service/cgroup-v2 supervision" as the target
+architecture — see `agent-vm/README.md`'s external references.)
 
-- **A single long-running host daemon** (`agentvm daemon`, intended to run
-  as a `systemd --user` service — unit wiring is a runbook/host-config
-  concern, tracked in §12) owns every session for the process's lifetime:
-  the git-mirror service and mitmproxy singletons (§6.1.1, §5.2), every
-  session's `SessionManager` (stdio tee + attach fan-out, §11), its
-  vsock↔TCP proxy bridge (§5.1), and its BPF receiver (§7.2).
-- **The CLI is a thin RPC client.** Every subcommand (`launch`, `list`,
-  `attach`, `stop`, `review`, `reap`) connects to a control Unix socket
-  (fixed path under the daemon's runtime directory), sends one
-  newline-delimited JSON request, and prints the JSON response. `launch`
-  does not block for the session's duration — it returns as soon as the
-  daemon reports the VM is running.
-- **Exception:** `attach` does not proxy interactive bytes through the
-  control socket. It first asks the daemon (one control-socket round trip)
-  for the session's `attach.sock` path, then connects to that socket
-  directly for the raw stdin/stdout passthrough (§11) — keeping bulk
-  terminal I/O off the control protocol.
-- This also resolves timeout enforcement more simply than a CLI-triggered
-  check could: the daemon runs its own internal periodic reap loop, so an
-  overdue session is stopped even if no CLI command runs for hours.
-  `agentvm reap` remains available as a manual/systemd-timer trigger, but is
-  no longer the only mechanism.
-- **Crash recovery:** if the daemon itself restarts, it reconciles its
-  on-disk session registry against actual Firecracker processes (by
-  PID/API-socket liveness) at startup, matching stale "running" entries to
-  reality.
+**Per-session unit graph.** Launching a session instantiates a templated
+set of systemd units, `agentvm-session-<id>-*`, started together as one
+transaction via a wrapping target:
+
+- **`agentvm-session-<id>.target`** — groups everything below.
+  `systemctl start` on this one unit launches the whole session atomically
+  (§13.1).
+- **`agentvm-session-<id>-vm.service`** — jailer, execing firecracker,
+  chrooted, dedicated uid/gid (§12.2). `RuntimeMaxSec=<timeout>` enforces
+  the session wall-clock cap declaratively. `BindsTo=` the three helper
+  units below (any one of them stopping — including a deliberate self-stop
+  — stops this unit too, §13.2); `After=` the same three, so they're
+  listening before the VM boots and starts talking.
+- **`agentvm-session-<id>-recv-proxy.service`**,
+  **`agentvm-session-<id>-recv-bpf.service`** — the two guest-initiated
+  transcript receivers (§11.1). `PartOf=agentvm-session-<id>-vm.service`
+  (stopping the VM stops these too — one-way, the reverse of `BindsTo=`).
+- **`agentvm-session-<id>-stdio.service`** — the interactive stdio bridge:
+  host-initiated connection to the guest's interactive vsock port,
+  `attach.sock` fan-out, and (§11.1) the `terminal.jsonl` tee. `PartOf=`
+  the VM unit, same as the receivers.
+- **`agentvm-session-<id>-idle.timer`** + **`.service`** — the inactivity
+  watchdog (§11.2). `PartOf=` the VM unit (torn down with the session).
+
+All of the above have `Restart=no` — nothing self-heals; a stopped unit is
+a decision, not a hiccup to paper over (an auto-restarted receiver would
+undo its own cap enforcement, §11.1).
+
+**Host-wide singleton services**, started independently of any session and
+outliving all of them: `agentvm-git-service.service` (§6.1.1) and
+`agentvm-mitmproxy.service` (§5.2). Every session's VM unit has
+`Requires=`+`After=` (not `BindsTo=`/`PartOf=`) pointing at both — a
+one-way "must be up before I start" dependency that does not couple their
+lifetime to any one session.
+
+**The CLI is a thin wrapper around systemd**, not an RPC client to a custom
+daemon:
+
+- `launch` renders the unit set for a new session ID and runs `systemctl
+  start agentvm-session-<id>.target`. Returns as soon as that call returns
+  — it does not block for the session's duration.
+- `list` queries `systemctl list-units 'agentvm-session-*'` plus each
+  session's own metadata file (repo, commit, launch time) for display.
+- `attach`/`detach` connect directly to the running session's `attach.sock`
+  (path derived from the session ID, no lookup needed) for raw
+  stdin/stdout passthrough (§11.1) — no control-socket round trip needed
+  first, since there's no daemon to ask.
+- `stop` runs `systemctl stop` on the target (cascades through the unit
+  graph above) — graceful-then-SIGKILL is `TimeoutStopSec=`/`KillMode=` on
+  the unit, not hand-rolled.
+- `review`/`transcript` read the session's on-disk transcript directory
+  directly (§11) — nothing but systemd was ever holding this state, so
+  there's no RPC boundary to cross.
+- `doctor` (§12.5) runs local host checks only — never touches any
+  session's units.
+- The former `reap`/manual-timeout-check command is dropped:
+  `RuntimeMaxSec=` makes it structurally unnecessary.
+
+**Session registry.** There is no daemon-mutated JSON file. `systemctl
+list-units`/`show` against the `agentvm-session-*` naming convention *is*
+the authoritative live-state source; a thin per-session metadata file
+(repo, pinned commit, launch timestamp — written once at launch, never
+mutated) supplies the fields systemd doesn't track. The old design's
+"crash recovery" concern (reconciling a stale registry after a daemon
+restart) doesn't apply here: there is no separate long-lived process whose
+crash could desync from reality, since systemd's own unit state *is*
+reality.
 
 ### 10.2 Concurrency model
 
-The daemon is a **single asyncio event loop** hosting all sessions as
-concurrent tasks (persistent stdio connections, N attach-client fan-out,
-per-connection proxy bridge relays, BPF event readers). Chosen over a
-thread-per-connection model because mitmproxy's own embeddable master
-(§5.2) is itself asyncio-based, so the proxy bridge composes directly into
-the daemon's loop instead of needing a thread↔event-loop bridge at that
-boundary.
+Not applicable under the design above — struck. Each per-session process
+(jailer/firecracker, the two receivers, the stdio bridge, the idle timer)
+is its own OS process, supervised independently by systemd; there is no
+shared event loop or single process to describe a concurrency model for.
 
 ### 10.3 Configuration
 
-Host-wide knobs (`max_concurrent_sessions`, default vcpu/mem, default
-timeout) live in a config file (e.g.
-`$XDG_CONFIG_HOME/agentvm/config.toml`), read once at daemon startup, with
-built-in defaults if the file is absent. Chosen over environment variables
-since more host-wide knobs are expected over time (default resource
-sizing, allowlist entries) and a file scales better than a pile of env
-vars.
+Host-wide knobs (`max_concurrent_sessions`, default resource sizing,
+default timeout) live in a config file (e.g.
+`$XDG_CONFIG_HOME/agentvm/config.toml`), read by the CLI on each invocation
+(there is no long-lived process to read it once at startup). Chosen over
+environment variables since more host-wide knobs are expected over time
+(default resource sizing, allowlist entries) and a file scales better than
+a pile of env vars.
+
+`max_concurrent_sessions` is enforced by `launch` counting currently-active
+`agentvm-session-*.target` units before starting a new one — rejecting (no
+units created, nothing started, §13.3) if already at the cap.
 
 - **CLI responsibilities** (exact command surface is an implementation
   detail, but must cover):
@@ -369,15 +432,19 @@ vars.
     session).
   - Stop/kill a session manually.
   - Review a finished session's result diff (§6.3) and its transcript.
+  - **`doctor`** (§12.5) — report host runtime/hardware status, independent
+    of any session: hardware vulnerability mitigation status
+    (Spectre/Meltdown/MDS etc., via `spectre-meltdown-checker`), hugepage
+    pool state, cgroup version, and jailer/systemd unit health. Read-only,
+    no side effects on running sessions.
 
-## 11. Session Transcript (Playback-Only)
+## 11. Session Transcript & Stream Receivers
 
 - Per session, a directory containing **separate newline-delimited JSON
   files per stream**:
   - `terminal.jsonl` — timestamped stdin/stdout chunks.
   - `proxy.jsonl` — request/response summaries from mitmproxy.
-  - `bpf.jsonl` — raw BPF events (§7.2's log file, or a per-session split of
-    it).
+  - `bpf.jsonl` — raw BPF events (§7.2).
 - Each line carries a common schema (timestamp, session ID, stream/event
   type, payload) so the files are **directly queryable via DuckDB**
   (`read_json_auto`, globbing across files/sessions) and importable into
@@ -386,7 +453,317 @@ vars.
   review/audit of what happened, not deterministic replay against recorded
   network responses.
 
-## 12. Decisions Log & Remaining Open Items
+### 11.1 Per-stream receivers
+
+**Delivery mechanism:** `proxy.jsonl` and `bpf.jsonl` are each written by
+their own small, dedicated host-side receiver process (§10.1's
+`recv-proxy`/`recv-bpf` units) — one per stream, deliberately kept separate
+rather than a single multiplexed process, to avoid any need for
+stream-routing logic. Each receiver:
+
+- is pre-configured with exactly one session's vsock path. Firecracker's
+  vsock device is a Unix-domain-socket proxy, not real kernel AF_VSOCK
+  (verified against Firecracker's own `docs/vsock.md`: it "mediates between
+  AF_UNIX sockets (host) and AF_VSOCK sockets (guest)"); guest-initiated
+  connections on port P surface at `<uds_path>_<P>`, and each VM has a
+  *dedicated* `uds_path`. There is therefore no cross-session ambiguity to
+  authenticate away, and no CID-based lookup is needed or even possible —
+  no peer-CID is exposed to the host side at all.
+- listens for one guest-initiated connection, **no handshake** (the
+  opposite direction from the interactive stdio channel below, which is
+  host-initiated and does use Firecracker's `CONNECT <port>\n` handshake).
+- runs a deliberately dumb loop: read up to N bytes, write to the `.jsonl`
+  file, sleep an interval — this read-size/interval pairing *is* the
+  bandwidth cap; there is no separate token-bucket mechanism.
+- enforces a **hard 100 MB cap per file**: once cumulative bytes written
+  reaches the cap, stop reading, close the accepted connection, close/
+  unlink the listening socket, and exit. No attempt is made to stop on a
+  JSONL line boundary (the final line past the cap may be truncated/
+  invalid) and no draining-and-discarding happens once capped — this is a
+  deliberate backstop against guest-side abuse, not a data-integrity
+  feature, and the guest's own writer is intentionally left to block/fail
+  against the closed socket.
+- has `Restart=no` (§10.1): an auto-restarted receiver would silently
+  reopen the very socket the cap enforcement just closed, defeating the
+  mechanism.
+
+`terminal.jsonl` is written by the stdio-bridge unit
+(`agentvm-session-<id>-stdio.service`) rather than a third standalone
+receiver, since that unit already holds the one persistent, host-initiated
+interactive stdio connection (needed regardless, to support `attach`/
+`detach`) and taps its traffic. Recording happens **regardless of attach
+state**; detaching a CLI client never touches the underlying guest
+connection or any other attached client. The same 100 MB hard-cap policy
+above applies to this tap as well.
+
+> **Open wire-level detail** (§15): whether the interactive stdio channel
+> and the terminal-transcript tap are literally the same vsock connection
+> observed from the host side (a single host-initiated connection, tapped
+> for recording and fanned out to N attach clients — the model assumed
+> above, requiring no guest-side change beyond pid1's existing design) or
+> become two separate guest-side connections (one interactive, one a
+> guest-initiated logging push symmetric with proxy/bpf) was not fully
+> pinned down by the discussion that produced this section, which focused
+> on the proxy/bpf case. Revisit if implementation makes the single-tapped-
+> connection model awkward.
+
+### 11.2 Inactivity watchdog
+
+Independent of, and in addition to, the total wall-clock session timeout
+(`RuntimeMaxSec=`, §10.1): a session is stopped after **10 minutes with no
+output activity on any of the three transcript streams combined** — total
+silence across all three, not a per-channel independent timeout.
+
+Mechanism, chosen to need no new IPC: each receiver (§11.1) and the stdio
+bridge only ever write their `.jsonl` file when real bytes arrive, and each
+creates/touches its file immediately on startup (before any real byte) so
+"nothing has happened *yet*" at session start doesn't read as
+already-idle. The file's own mtime *is* the last-activity signal, for free.
+
+`agentvm-session-<id>-idle.timer` fires a lightweight check roughly every
+60 seconds: take `max(mtime)` across the three `.jsonl` files; if `now -
+max(mtime) > 600s`, stop one of the three receiver/bridge units — the
+`BindsTo=` cascade already wired for the VM unit (§10.1) does the rest, so
+the watchdog itself needs no "stop the VM" logic of its own.
+
+## 12. Production Hardening & Resource Control
+
+### 12.1 Hugepages
+
+Guest memory is backed by **pre-allocated hugetlbfs pages (`2M` mode)**,
+chosen over `None`/`Transparent` despite snapshotting being explicitly out
+of scope for this project (the usual reason to prefer `2M` is performance
+under snapshot/UFFD workflows, which don't apply here — `2M` is still
+chosen anyway). Default guest RAM is **250 MiB** per session (a multiple of
+2, i.e. exactly 125 hugetlbfs pages, no leftover 4K fragment).
+
+The hugetlbfs pool is **statically sized at host boot** via NixOS's own
+kernel/sysctl configuration (`boot.kernel.sysctl."vm.nr_hugepages"` or
+equivalent), not allocated/resized dynamically per launch — sized to `250
+MiB × max_concurrent_sessions` (§10.3). An undersized pool causes erratic
+behavior/`SIGBUS` in a guest rather than a clean failure, so this value
+must never drift from the configured concurrency cap; the two are set
+together, by hand, in host config, not derived at runtime.
+
+The chosen mode is wired into `FirecrackerVM`'s `/machine-config` PUT
+(`huge_pages` field) alongside `vcpu_count`/`mem_size_mib`.
+
+**Interaction with `nx_huge_pages` (§12.4):** KVM's default iTLB-multihit
+mitigation splits its own guest-physical→host-physical (EPT/NPT) mappings
+for executable regions down to 4K, independent of whether the underlying
+host memory is hugetlbfs-backed. Left at its default, this can silently
+negate the entire point of choosing `2M` here — §12.4 must be decided
+alongside this, not treated as an independent checkbox.
+
+### 12.2 Jailer + systemd (process isolation model)
+
+Every session's `firecracker` process runs under **`jailer`** (bundled in
+the same nixpkgs `firecracker` derivation — verified by building it:
+`1.16.1` ships `firecracker` + `jailer` + others in one `bin/`, no extra
+packaging needed), itself run *as* a systemd unit
+(`agentvm-session-<id>-vm.service`, §10.1) rather than spawned and
+supervised by a bespoke daemon.
+
+What jailer alone provides: chroot via `pivot_root` into
+`<chroot_base>/<exec_file_name>/<id>/root`; always a new mount namespace; a
+`setuid`/`setgid` drop to a **unique uid/gid per concurrent session**. It
+does *not* provide, without extra flags: restart/liveness supervision,
+stdout/stderr capture, declarative resource limits, or guaranteed cleanup
+on crash — systemd supplies all of these on top:
+
+- `Delegate=yes` on the VM unit lets systemd own the top of the cgroup
+  subtree while jailer creates its own nested cgroup underneath for the
+  VM's threads, without the two fighting over the same cgroup node (cgroup
+  v2's "no internal process constraint").
+- Killing the unit/scope reliably kills the whole cgroup — this is what
+  avoids the orphan risk jailer's own docs call out: with `--daemonize` but
+  no `--new-pid-ns`, jailer's PID and firecracker's PID differ, so killing
+  jailer alone would not kill firecracker.
+- `IPAddressDeny=any` (no `IPAddressAllow=` needed) on the VM unit, since it
+  has no legitimate network need at all — only a local vsock UDS (§12.3) —
+  is a second, defense-in-depth backstop alongside chunk F's egress
+  allowlist.
+- **`--cgroup-version 2` must be passed explicitly.** jailer's own default
+  is `--cgroup-version 1`; this host mounts cgroup v2 only (§2) — an
+  unspecified `--cgroup-version` would target a hierarchy that doesn't
+  exist on this host.
+
+### 12.3 Network egress hardening (corrected against generic guidance)
+
+There is no TAP/virtio-net device anywhere in this design (§3). Generic
+Firecracker production-hardening advice to rate-limit "the guest's network
+interface" or block TAP traffic to the cloud IMDS address
+(`169.254.169.254`) does not apply and is not implemented: there is no
+IP-layer path for the guest to reach that address, or anywhere else, in the
+first place, since there is no network interface to route through.
+
+What does apply: `IPAddressDeny=any` on the VM unit (§12.2) confines the
+one process that *could* misuse a network capability if compromised, even
+though it isn't supposed to have one. Rate-limiting the *live* proxied HTTP
+traffic (distinct from the transcript-log bandwidth cap, §11.1) has no
+Firecracker-API mechanism to lean on — the `Vsock` device schema has no
+rate-limiter field, unlike `drives`/`network-interfaces` (verified against
+the API spec) — so if wanted at all, it has to happen in host software (the
+vsock↔mitmproxy bridge relay loop, or a mitmproxy addon); not built in this
+version.
+
+### 12.4 KVM/host tuning
+
+- **`min_timer_period_us`**: lowers host CPU overhead from guest-injected
+  timer interrupts (via the `kvm-pit` kernel thread, below). Applied via a
+  kernel module parameter, made **explicit in host config** (`llm-host.nix`,
+  `boot.extraModprobeConfig` or equivalent, for `options kvm
+  min_timer_period_us=<N>`) rather than an ad hoc one-off `modprobe` — the
+  exact value needs measuring against this guest kernel's actual timer
+  usage, not assumed.
+- **`kvm-pit` thread cgroup placement is not automatic.** Verified against
+  current kernel source: `arch/x86/kvm/i8254.c`'s `kvm_create_pit()`
+  creates its worker via `kthread_run_worker(0, "kvm-pit/%d", pid_nr)`, and
+  `kernel/kthread.c` shows every kthread is actually forked from the global
+  `kthreadd` (PID 2) context — the `%d` in the name is cosmetic (the
+  creating thread's PID, for identification only), not a real
+  parent/cgroup relationship. `Delegate=yes` (§12.2) cannot reach it, since
+  delegation only covers processes forked from the unit's own tree.
+  Mitigation: an `ExecStartPost=` script on the VM unit locates the
+  `kvm-pit/<tid>` task (scan for a TID under firecracker's own
+  `/proc/<pid>/task/`) and writes its PID into the unit's own
+  `cgroup.procs`. Two risks, to be confirmed by testing rather than assumed
+  (§14): PIT creation is lazy (first guest PIT access, not process start)
+  so a single-shot poststart check may race it and needs a retry/poll; and
+  whether a kernel-thread PID can be freely migrated via `cgroup.procs` the
+  way a normal process's can (no definitive kernel documentation found
+  either way).
+- **SMT**: per Firecracker's own guidance ("SMT is frequently a
+  precondition for speculation issues... where one tenant could leak
+  information to another"), disabled (`nosmt` on the host kernel cmdline) —
+  this project's concurrent agent sessions are exactly the "tenants sharing
+  a physical host" scenario the guidance warns about. Designed for the
+  eventual bare-metal deployment target; the current Hyper-V-nested dev
+  environment can't actually enforce this at the physical layer, which is
+  expected and acceptable for dev.
+- **`nx_huge_pages=never`** (module parameter, same modprobe-config
+  mechanism as `min_timer_period_us`), chosen over cgroup v2's
+  `favordynmods` remount — needed to actually realize `2M` hugepages'
+  benefit for executable guest memory (§12.1). **Also made explicit in host
+  config**, not applied ad hoc.
+- **cgroup v2 only** — see §2; jailer's `--cgroup-version 2` (§12.2) and the
+  above are all v2-targeted, no v1 fallback.
+
+### 12.5 The `doctor` CLI subcommand
+
+Reports host runtime/hardware status independent of any session, read-only,
+no side effects:
+
+- Hardware vulnerability mitigation status via `spectre-meltdown-checker` —
+  this is the delivery mechanism for "run it once, record the result in the
+  runbook": `doctor` makes it a repeatable, on-demand check instead of a
+  one-time manual run.
+- Hugepage pool state (configured vs. actually available, §12.1).
+- cgroup version in use (must report v2; a v1 finding here is a
+  host-misconfiguration bug, §2).
+- jailer/systemd unit health for the hardening measures above, including
+  whether the shared singleton services (§10.1) are up.
+
+## 13. Error Handling & Failure Modes
+
+### 13.1 Launch-time atomicity
+
+A session's unit graph (§10.1: VM unit + two receivers + stdio bridge +
+idle timer, wrapped by one `.target`) starts as a single systemd
+transaction. `BindsTo=`/`Requires=`-family dependencies mean a failure in
+any required unit (e.g. jailer failing to set up its chroot, a receiver
+failing to bind its vsock UDS path) fails the whole `systemctl start
+agentvm-session-<id>.target` transaction — no orphaned half-started
+session, no manual cleanup path to write and maintain. `launch` surfaces
+the failing unit's `systemctl status`/journal output to the user; nothing
+is retried automatically.
+
+### 13.2 Stop cascades
+
+Three independent triggers converge on the same mechanism (§10.1's
+`BindsTo=`, VM unit → the two receivers + stdio bridge):
+
+1. Manual `stop` (direct `systemctl stop` on the target/VM unit).
+2. Session wall-clock timeout (`RuntimeMaxSec=` on the VM unit itself).
+3. A receiver or the stdio bridge stopping on its own — whether from
+   hitting its 100 MB cap (§11.1, intentional), the idle watchdog stopping
+   it deliberately (§11.2, intentional), or an unrelated crash
+   (unintentional).
+
+All three converge on "the VM unit stops," because `BindsTo=` doesn't
+distinguish *why* a bound unit went inactive. This is a deliberate
+fail-closed posture for case 3's intentional half (matches "backstop
+against abuse"), but it means an unrelated bug in a small receiver can take
+down a whole agent session — raising the bar on keeping those receivers
+minimal and well-tested (§14), which was the reasoning for keeping them as
+separate, dumb processes in the first place (§11.1).
+
+### 13.3 Best-effort vs. fatal failures
+
+Not every failure should block a launch or kill a session:
+
+- **Fatal** (fails the launch transaction, §13.1): hugetlbfs pool
+  exhaustion (surfaces as a Firecracker API/InstanceStart error),
+  chroot/uid setup failure, a receiver failing to bind its vsock path, the
+  shared git-service/mitmproxy singletons (§10.1) not being up
+  (`Requires=`+`After=` on those).
+- **Best-effort, non-fatal** (logged, session proceeds): the `kvm-pit`
+  cgroup-placement poststart script (§12.4) failing to find or move the
+  thread — it affects CPU-accounting precision, not correctness or
+  isolation, so a failure here degrades an accounting nicety rather than
+  the session itself. This is a spec-level decision made for completeness;
+  revisit if empirical testing (§14) shows the placement is reliable enough
+  to be a hard requirement instead.
+
+### 13.4 BPF violations
+
+Unchanged from §7.2: log + alert only, never an automatic kill on a
+BPF-observed event in this version.
+
+## 14. Testing Strategy
+
+Test markers (repo-wide convention, tracked in `todo.md`): `needs_kvm`
+(requires `/dev/kvm`), `needs_root` (elevated privileges — loop-mounts, BPF
+load, cgroup/jailer operations), `needs_bpf` (BPF load capability).
+Unmarked tests run anywhere, including CI without virtualization.
+
+Layered approach, consistent with the rest of the project (fakes for unit
+tests, real KVM for integration):
+
+- **Unit tests, no VM needed:** receiver read-loop cap logic (byte
+  counting, close-on-cap, no line-boundary special-casing) against a fake
+  socket; idle-watchdog mtime-comparison logic against a fake clock and
+  fake files; unit-file/target rendering (§10.1) against fixture session
+  IDs; pure functions for the jailer invocation argv (mirrors the existing
+  `build_cap_drop_plan` pattern).
+- **`needs_kvm` integration tests**, on this host's fixture kernel/rootfs:
+  - Hugepage boot-time benchmark: `2M` vs `None` (§12.1).
+  - Growth-bounding: a receiver fed past 100 MB stops reading and the file
+    caps at exactly that size; JSONL up to the cap remains valid, the tail
+    may not (§11.1).
+  - Idle watchdog: a session with no traffic on any of the three streams is
+    stopped at the 10-minute mark; an active one isn't (§11.2).
+  - Launch-atomicity: inject a failure in one required unit (e.g. an
+    already-bound vsock path) and confirm the whole target fails to start
+    with no leftover running units (§13.1).
+- **`needs_kvm`+`needs_root` integration tests:**
+  - `kvm-pit` placement: boot a VM, confirm the poststart script finds and
+    moves the thread, confirm via `cpu.stat`/`systemd-cgtop` that its CPU
+    time now attributes to the VM's cgroup (§12.4 — this specifically tests
+    the two open risks flagged there, rather than assuming them away).
+  - Cgroup delegation: confirm `Delegate=yes` and jailer's own
+    `--cgroup-version 2` nested cgroup coexist without one clobbering the
+    other's limits.
+- **`doctor` subcommand** (§12.5): unit-tested output formatting against
+  fake `spectre-meltdown-checker`/`systemctl`/hugepage-pool outputs; one
+  `needs_root` smoke test against the real host tools.
+
+Per-chunk step-by-step test breakdown (what a test asserts, fixture shape,
+etc.) lives in `todo.md`'s K4/K5 entries and is not duplicated here — this
+section states the strategy and lists the scenarios this design work
+introduced; `todo.md` remains the execution checklist.
+
+## 15. Decisions Log & Remaining Open Items
 
 Decisions the spec originally left open, pinned down during implementation
 (see `docs/agent-vm-host-plan.md` and `todo.md` for the chunk/step each
@@ -419,20 +796,47 @@ landed in):
   isn't sufficient) — not worth chasing as a fine-grained capability grant
   for a process that drops every capability moments later anyway
   (chunk G5/K1).
-- **Host daemon / CLI process model** (§10.1) — a single long-running
-  daemon process owns all session state; the CLI is a thin RPC client
-  (newline-delimited JSON over a control Unix socket).
-- **Host-side concurrency model** (§10.2) — asyncio, one event loop per
-  daemon process.
+- **Host daemon / CLI process model** (§10.1) — **superseded.** Originally
+  a single long-running daemon process; now the CLI steers systemd unit
+  state directly, with no central daemon (K5, decided during hardening
+  discussion — see §10.1 for the full replacement design).
+- **Host-side concurrency model** (§10.2) — **superseded**, struck along
+  with the daemon above; not applicable to a systemd-unit-per-process model.
 - **Host-wide config source** (§10.3) — a config file, not environment
   variables.
+- **Hugepages mode** (§12.1) — `2M` (pre-allocated hugetlbfs pool), default
+  guest RAM 250 MiB, pool statically sized at host boot.
+- **Process isolation model** (§12.2) — jailer run as a systemd unit
+  (`Delegate=yes`, `--cgroup-version 2`), not a bespoke daemon-supervised
+  subprocess.
+- **Transcript stream delivery & growth bounding** (§11.1) — three (not
+  one multiplexed) per-session receiver processes, hard 100 MB cap per
+  file, authenticated structurally by Firecracker's dedicated-`uds_path`-
+  per-VM model rather than any CID lookup.
+- **Inactivity watchdog** (§11.2) — 10-minute combined-silence threshold,
+  implemented via transcript-file mtimes and a per-session systemd timer,
+  reusing the existing stop cascade rather than a separate kill path.
+- **cgroup version** (§2) — v2 only, no v1 support anywhere in this
+  subsystem.
 
 Still open:
 
 - **Package registry strategy per ecosystem** (§5.3) — local caching mirror
   vs. direct-through-proxy, decided as ecosystems (pip, npm, etc.) are
   actually needed. No ecosystem beyond git has been wired in yet.
-- **Daemon `systemd --user` unit** — the daemon process itself is built in
-  chunk I, but its supervised-startup unit (enable/start on boot vs. lazy
-  first-launch start, restart policy) is not yet written; tracked for the
-  chunk K3 runbook.
+- **Resource limits → systemd unit property mapping** (§12.2) — which of
+  the spec'd cgroup knobs (`blkio.throttle.*`, `memory.limit_in_bytes`,
+  `cpu.shares`/`cfs_quota_us`, jailer `fsize`/`no-file`) become declarative
+  unit directives (`MemoryMax=`, `CPUQuota=`, `IOWeight=`) versus jailer's
+  own raw `--cgroup`/`--resource-limit` flags is undecided.
+- **Host memory: swap and KSM** (§12.4) — whether/how to disable swap (or
+  secure it) and disable KSM has not been decided against `llm-host.nix`'s
+  actual configuration (zram root, no swap partition currently defined).
+- **Terminal-transcript wire-level mechanism** (§11.1) — whether recording
+  taps the same host-initiated connection used for interactive attach, or
+  becomes a second, guest-initiated logging push symmetric with
+  proxy/bpf's receivers, is not fully pinned down.
+- **Chunk I re-specification** — I1–I8 in `todo.md` still describe the
+  superseded daemon/registry/RPC design (§10.1's "Host daemon / CLI process
+  model" decision above) and need rewriting against the systemd-unit model
+  before implementation starts there.

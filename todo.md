@@ -18,7 +18,7 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
 - [ ] F — Network egress
 - [ ] G — eBPF monitoring
 - [ ] H — Guest rootfs closure
-- [ ] I — Orchestration daemon + CLI
+- [ ] I — Orchestration (systemd units) + CLI
 - [ ] J — Transcript unification
 - [ ] K — Hardening & polish
 
@@ -211,47 +211,52 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
   - [ ] `FakeSpawner` unit test updated for new binary/cwd/env
   - [ ] Prior echo_agent-based integration tests updated/replaced (process starts, stdio reachable, `/workspace` visible)
 
-## Chunk I — Orchestration daemon + CLI
+## Chunk I — Orchestration (systemd units) + CLI
 
-- [ ] **I1 — SessionConfig + SessionRegistry + daemon skeleton**
-  - [ ] Dataclass + validation (repo/commit non-empty, positive resource values)
-  - [ ] JSON-file-backed registry: `create`/`update`/`get`/`list_all` (authoritative on disk, mutated only from inside the daemon)
-  - [ ] `config.py`: TOML file (`$XDG_CONFIG_HOME/agentvm/config.toml`) for host-wide knobs, built-in defaults if absent
-  - [ ] `daemon.py`: asyncio process, control Unix socket, newline-JSON RPC (`{"cmd","args"}` → `{"ok","result"|"error"}`), one `"ping"` handler to prove the transport
-  - [ ] `agentvm daemon` CLI subcommand runs it in the foreground (systemd-unit wiring deferred to K3)
-  - [ ] Unit tests: validation rejects bad config; registry round-trip; concurrent updates reflected; config defaults vs file override; daemon ping round-trip
-- [ ] **I2 — `launch` RPC handler + CLI client**
-  - [ ] `LaunchOrchestrator`: registry create → `prepare_repo` → build device2/3 → ensure git-service+mitmproxy started once in-process (no cross-process singleton problem, daemon is one process) → boot VM → start SessionManager/bridge/receiver as daemon-owned asyncio tasks → mark running
-  - [ ] Every subsystem dependency-injected for testability
-  - [ ] CLI-side thin client: one RPC round trip, prints session_id, returns immediately (does not block for session duration)
-  - [ ] Unit test: step ordering via fakes; failure path leaves registry "failed", not "running"
-  - [ ] `needs_kvm` integration test: full launch against fixture repo, observable via stdio
-- [ ] **I3 — `list` RPC handler + CLI client**
-  - [ ] In-memory status while daemon is up; daemon-startup reconciliation against Firecracker instance-info for stale "running" entries (crash recovery)
-  - [ ] Table formatting
-  - [ ] Unit tests: startup reconciliation corrects stale "running"; formatting tested independently
+- [ ] **I1 — `units.py` + `session_meta.py` + `config.py`**
+  - [ ] Pure functions rendering unit-file text for the five core per-session units: `agentvm-session-<id>.target`, `-vm.service` (jailer/firecracker), `-recv-proxy.service`, `-recv-bpf.service`, `-stdio.service`
+  - [ ] `-vm.service`: `--cgroup-version 2`, `Delegate=yes`, `IPAddressDeny=any`, `RuntimeMaxSec=<timeout>`, `Restart=no`, `TimeoutStopSec=`/`KillMode=`, `BindsTo=`+`After=` the three helper units, `Requires=`+`After=` the two host-wide singletons
+  - [ ] Helper units: `PartOf=` the vm unit, `Restart=no`
+  - [ ] One fixed/shared jailer uid·gid for now (K5.2 hardens to per-session-unique); idle-watchdog timer/service deferred to K5.3
+  - [ ] `session_meta.py`: write-once per-session metadata file (repo, commit, launch timestamp)
+  - [ ] `config.py`: TOML host-wide config (`max_concurrent_sessions`, default resource sizing, default timeout), loaded fresh per CLI invocation, no caching
+  - [ ] Unit tests: rendered unit text has expected directives for a fixture session; metadata round-trip; config defaults vs file override
+- [ ] **I2 — `launch` CLI command**
+  - [ ] `prepare_repo` (D4) → build device2/3 → write metadata (I1) → render+write unit files → one `systemctl start agentvm-session-<id>.target` call
+  - [ ] Failure surfaces the failing unit's `systemctl status`/`journalctl` output, no retry (§13.1 atomicity)
+  - [ ] Prints session_id, returns immediately, does not block for session duration
+  - [ ] No concurrency cap yet (I6)
+  - [ ] Unit test: pipeline step order via fakes/mocked `systemctl` calls
+  - [ ] `needs_kvm`+`needs_root` integration test: launch against fixture repo, confirm target+sub-units active via real `systemctl`, VM reachable via C2/C3 stdio
+- [ ] **I3 — `list` CLI command**
+  - [ ] `systemctl list-units 'agentvm-session-*.target'` parsed + joined with each session's I1 metadata file
+  - [ ] No daemon-crash reconciliation needed — systemd's own unit state is reality
+  - [ ] Unit test: table formatting against fixture/mocked `systemctl` output + metadata files
 - [ ] **I4 — `attach`/`detach` commands**
-  - [ ] One RPC round trip (`attach_info`) to resolve `attach.sock` path, then direct raw-tty passthrough bypassing the control socket; fixed escape sequence to detach
+  - [ ] Connect directly to `<session_dir>/attach.sock` (path derived from session_id, no lookup round trip)
+  - [ ] Same raw-tty passthrough + escape-sequence detection as originally scoped
   - [ ] Unit test: escape-sequence detection incl. split across reads
-  - [ ] `needs_kvm` integration test: attach, type, see response; detach doesn't disturb session
-- [ ] **I5 — `stop` RPC handler + CLI client**
-  - [ ] Graceful stop → timeout → SIGKILL fallback; registry update; cancel this session's asyncio tasks
-  - [ ] Unit test: force-kill path taken after timeout, registry still correct
-  - [ ] `needs_kvm` integration test: process actually gone; `list` reflects "stopped"
-- [ ] **I6 — Timeout enforcement**
-  - [ ] `reap_overdue_sessions` with injectable clock; stops overdue sessions with reason "timeout"
-  - [ ] Runs as an internal periodic task in the daemon's event loop (catches an overdue session even with no CLI invoked for hours)
-  - [ ] `"reap"` RPC handler + `agentvm reap` CLI entrypoint for manual/systemd-timer triggering
-  - [ ] Unit tests: overdue vs within-deadline via fake clock; periodic task fires on tick
-- [ ] **I7 — Concurrency cap**
-  - [ ] `max_concurrent_sessions` from I1's config file, enforced in the `launch` handler after reaping runs
-  - [ ] Rejects without creating a registry entry or starting any subsystem when at cap
-  - [ ] Unit tests: cap enforcement via spies; stopped/failed sessions excluded from the count
-- [ ] **I8 — `review` and `transcript` commands**
-  - [ ] `review`: RPC returns paths once stopped/failed; CLI computes `extract_diff` locally (not streamed over RPC), pipes to `delta`/`less`
-  - [ ] `transcript`: RPC returns session_dir; CLI prints jsonl paths + example DuckDB command
+  - [ ] `needs_kvm` integration test: launch, attach, type a line, detach, session still running after
+- [ ] **I5 — `stop` command**
+  - [ ] `systemctl stop agentvm-session-<id>.target`, cascades through `BindsTo=` graph (I1)
+  - [ ] Graceful-then-SIGKILL is declarative (`TimeoutStopSec=`/`KillMode=` in I1), not hand-rolled
+  - [ ] `needs_kvm` integration test: launch, stop, firecracker process actually gone, `list` shows inactive
+- [ ] **I6 — Concurrency cap**
+  - [ ] `max_concurrent_sessions` (I1 config) enforced in `launch` (I2) by counting active `agentvm-session-*.target` units via `systemctl` before starting a new one
+  - [ ] Rejects (no units created, nothing started, §13.3) at cap
+  - [ ] Unit test: cap=1 + mocked `systemctl` showing one active target → launch refuses, I2 pipeline never invoked (spy-based); stopped/inactive targets don't count
+- [ ] **I7 — `review`/`transcript` commands**
+  - [ ] Read the session's on-disk transcript directory directly — no RPC, no daemon
+  - [ ] `review` requires target inactive (checked via `systemctl is-active`), else clear error; calls E4's `extract_diff` locally, pipes to `delta`/`less`
+  - [ ] `transcript`: prints jsonl paths + DuckDB one-liner
   - [ ] Unit tests: "must be stopped" guard; pager selection via fake `shutil.which`
-  - [ ] `needs_kvm` integration test: launch → stop → review shows expected diff
+  - [ ] `needs_kvm` integration test: launch → stop → review end-to-end
+- [ ] **I8 — `doctor` subcommand skeleton**
+  - [ ] Read-only, no side effects, independent of any session
+  - [ ] cgroup version check (must report v2 per §2)
+  - [ ] Host-wide singleton services (git-service, mitmproxy) active via `systemctl is-active`
+  - [ ] Extended in K5.5 with hugepage-pool state + `spectre-meltdown-checker` output
+  - [ ] Unit test: output formatting against fake/mocked `systemctl`/cgroup reads
 
 ## Chunk J — Transcript unification
 
@@ -282,8 +287,9 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
   - [ ] "Decisions made" section covering every entry in spec §12's decisions log: git-http-backend wrapper, package-registry strategy (explicitly left deferred), kernel config fragment + vmlinux/bzImage + devtmpfs deviations, closure isolation mechanism, vsock shim choice, vsock crate choice (`nix`, not `vsock`), eBPF load privilege (root before cap-drop), daemon/RPC/concurrency/config-source decisions
   - [ ] Every runbook claim checked against actual final code, not the original plan
 - [ ] **K4 — Hugepages** (per [firecracker's hugepages.md](https://github.com/firecracker-microvm/firecracker/blob/main/docs/hugepages.md))
-  - [ ] Decide `None` (default) vs `Transparent` (THP via `madvise(MADV_HUGEPAGE)`, guest memory must be a multiple of 2MB) vs `2M` (pre-allocated hugetlbfs pool) for our microVM memory sizes
-  - [ ] If `2M`: host-side hugetlbfs pool sizing/allocation as part of launch prep, sized to cover concurrent-session memory (I7's `max_concurrent_sessions`); undersized pool causes erratic behavior/`SIGBUS`
+  - [x] Mode decided: `2M` (pre-allocated hugetlbfs pool), despite snapshotting being explicitly out of scope — chosen over `None`/`Transparent` regardless
+  - [ ] Default guest RAM decided: **250 MiB** per session (`mem_size_mib`) — valid for `2M` mode (250 is a multiple of 2, i.e. 125 hugetlbfs pages, no leftover 4K fragment)
+  - [ ] Host-side hugetlbfs pool sizing/allocation as part of launch prep: pool size = `250 MiB × max_concurrent_sessions` (I7); undersized pool causes erratic behavior/`SIGBUS`
   - [ ] Wire the chosen mode into `FirecrackerVM`'s `/machine-config` PUT (`huge_pages` field) alongside `vcpu_count`/`mem_size_mib`
   - [ ] Note interactions before picking a mode: `Transparent` doesn't work with UFFD during snapshot resume; `2M` requires UFFD and can't combine with file-backed restore; dirty-page tracking forces 4K granularity, negating the benefit either way - relevant only if snapshotting is ever added, otherwise not a blocker
   - [ ] `needs_kvm` integration/benchmark test: boot time with hugepages enabled vs `None`, on this host's fixture kernel/rootfs
@@ -291,11 +297,13 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
   - [ ] Host kernel: `quiet loglevel=1` on the host's own boot cmdline (llm-host.nix), not the guest's; keep host kernel/microcode current via the normal NixOS update path
   - [ ] Firecracker invocation: never pass `--seccomp-filter`/`--no-seccomp` (keep the built-in default filters); add `8250.nr_uarts=0` to the *guest* kernel_args once the real agent (H5) no longer needs the console for liveness/debugging, or otherwise rate-limit/null-redirect console output in production
   - [ ] `terminal.jsonl`/`bpf.jsonl`/`proxy.jsonl` growth is bounded (rotation or size cap) rather than unbounded append-forever, per the "bounded storage for logs" recommendation
-  - [ ] Host-side watchdog: detect and SIGKILL a wedged/unresponsive firecracker process (relates to I5/I6's stop/reap paths - confirm reaping covers a hung, not just a cleanly-stoppable, VM)
+  - [ ] Host-side watchdog: kill the session after **10 minutes of no output activity on any channel** (terminal/proxy/bpf combined - not a per-channel independent timeout, and orthogonal to I6's total wall-clock session timeout). Minimal design, no new IPC: each stream's receiver (K5 growth-bounding item) already only writes its `.jsonl` file when real bytes arrive, so the file's mtime *is* the last-activity signal for free - receiver touches/creates its file immediately on startup (before any real byte) so "nothing yet" doesn't read as already-idle. A per-session `systemd.timer` (companion unit, `PartOf=` back to the VM unit so it never outlives the session) polls every ~60s: take `max(mtime)` across the three files, and if `now - max(mtime) > 600s`, `systemctl stop` one of the three receiver units - reuses the already-decided `BindsTo=` cascade (VM unit stops when any receiver stops) instead of inventing a separate "stop the VM" path. `needs_kvm` integration test: idle VM (no terminal/proxy/bpf traffic) gets stopped at the 10-minute mark; an active one doesn't
   - [ ] Jailer or equivalent: run firecracker chrooted under a dedicated non-privileged uid/gid per session (one unique uid/gid per concurrent VM), with `--exec-file`/`--chroot-base-dir`/`--netns` unwritable by unprivileged users
-  - [ ] Resource limits per VM via cgroups/jailer: `blkio.throttle.io_serviced` + `io_service_bytes`, `memory.limit_in_bytes` (+ `memsw`/soft limit), `cpu.shares` + `cpu.cfs_period_us`/`cfs_quota_us`, jailer `fsize`/`no-file`
-  - [ ] KVM/host tuning: lower `kvm min_timer_period_us` (modprobe config), move `kvm-pit` kernel threads into each VM's cgroup, disable SMT or otherwise document the tenant-isolation tradeoff for this host, `kvm.nx_huge_pages=never` or cgroups `favordynmods` (kernel 6.1+)
-  - [ ] Host memory: disable swap (or secure swap) so guest memory is never paged to disk; disable KSM to prevent cross-VM page-dedup side channels
-  - [ ] Network egress hardening (builds on chunk F): rate limiters on the guest's network interface (Firecracker API or `tc qdisc`), and explicitly drop TAP-device traffic to the IMDS address `169.254.169.254` regardless of the F2 allowlist
-  - [ ] Hardware vulnerability posture: run `spectre-meltdown-checker` against the host once, record the result in the K3 runbook, and note vendor-specific (Intel/AMD) mitigation guidance to revisit on host CPU changes
+  - [ ] **OPEN QUESTION:** Resource limits per VM via cgroups/jailer: `blkio.throttle.io_serviced` + `io_service_bytes`, `memory.limit_in_bytes` (+ `memsw`/soft limit), `cpu.shares` + `cpu.cfs_period_us`/`cfs_quota_us`, jailer `fsize`/`no-file` - now that jailer runs under a systemd unit (K5 decision), these need mapping onto concrete unit directives (`MemoryMax=`, `CPUQuota=`, `IOWeight=`/`IOReadBandwidthMax=`, `Delegate=yes`) vs. left as jailer's own raw `--cgroup`/`--resource-limit` flags - undecided which authority owns which knob
+  - [ ] KVM/host tuning: lower `kvm min_timer_period_us` (modprobe config), move `kvm-pit` kernel threads into each VM's cgroup, disable SMT or otherwise document the tenant-isolation tradeoff for this host, `kvm.nx_huge_pages=never` or cgroups `favordynmods` (kernel 6.1+) — interacts with K4: `nx_huge_pages` splitting can shatter the `2M`-mode EPT mappings for executable guest memory regardless of hugetlbfs backing, undermining the reason `2M` was picked
+  - [ ] `min_timer_period_us` and `favordynmods` made explicit in host config (llm-host.nix), not just applied ad hoc: `boot.extraModprobeConfig` (or equivalent) for `options kvm min_timer_period_us=<N>`, and the cgroup v2 remount (`-o remount,favordynmods`) wired as a systemd unit/mount option rather than a manual one-off command
+  - [ ] `kvm-pit` thread cgroup placement is **not automatic** — verified against current kernel source (`arch/x86/kvm/i8254.c`'s `kvm_create_pit()` calls `kthread_run_worker(0, "kvm-pit/%d", pid_nr)`; per `kernel/kthread.c`, every kthread is actually forked from the global `kthreadd` (PID 2) context via `create_kthread()`, not from the calling process — the `%d` in the name is just the creator's PID for human identification, not a real parent/cgroup relationship). systemd's `Delegate=yes` cannot reach it: delegation only covers processes forked from the unit's own tree, and `kvm-pit` never is one. Needs an `ExecStartPost=` script on the VM unit: locate the `kvm-pit/<tid>` task (scan `/proc/*/comm` for a TID under firecracker's own `/proc/<pid>/task/`), write its PID into the unit's delegated `cgroup.procs`. Two open risks to test, not assume: (a) timing — PIT creation is lazy (on first guest PIT access), so a single-shot poststart grep may race it; needs a short retry/poll rather than a one-off check; (b) whether a kernel-thread PID can be freely migrated via `cgroup.procs` on this kernel the way a normal process can (no blocking cgroup v2 doc text found either way — cgroup v1 had known quirks moving kthreads for some controllers). `needs_kvm`+`needs_root` integration test: boot a VM, confirm the poststart script finds and moves the thread, confirm via `cpu.stat`/`systemd-cgtop` that its CPU time now attributes to the VM's cgroup
+  - [ ] **OPEN QUESTION:** Host memory: disable swap (or secure swap) so guest memory is never paged to disk; disable KSM to prevent cross-VM page-dedup side channels - not yet discussed at all against llm-host.nix's actual config (zram root, no swap partition currently defined)
+  - [ ] Network egress hardening (builds on chunk F): **no TAP/virtio-net device exists in this design at all (spec §3)** — the earlier "rate-limit the guest's network interface, drop TAP traffic to IMDS" wording was generic Firecracker prod-host-setup.md advice that doesn't apply here and is corrected. All egress is vsock→host-UDS→mitmproxy (§5); there's no IP-layer path to `169.254.169.254` (or anywhere else) to block, since there's no network interface for the guest to route through. What still applies: (a) confine the firecracker+jailer systemd unit itself with `PrivateNetwork=yes`/`IPAddressDeny=any` — it has no legitimate network need, only a local vsock UDS; (b) rate-limiting the live proxied HTTP traffic (not the transcript logs, which K5's growth-bounding item already covers) has no Firecracker-API mechanism to lean on (verified: the `Vsock` device schema has no rate-limiter field, unlike `drives`/`network-interfaces`) — must happen in host software, e.g. the F6 relay loop or a mitmproxy addon, if wanted at all
+  - [ ] Hardware vulnerability posture: `spectre-meltdown-checker` output is surfaced through the new `agentvm doctor` subcommand (spec §10.1), not just a one-off manual run; K3 runbook still records the baseline result and vendor-specific (Intel/AMD) mitigation guidance to revisit on host CPU changes
   - [ ] Explicitly out of scope for a single-operator host (record in K3's decision log rather than implementing): per-instance uid/gid *fleet* management beyond what one concurrent-session cap needs, and the ARM-only `KVM_CAP_COUNTER_OFFSET` check (this host is x86_64)
