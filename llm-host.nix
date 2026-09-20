@@ -282,7 +282,8 @@ in
           };
           # Contents of machine-id at uninitialized state (before/during first boot) must be "uninitialized" exactly.
           # Creating an uninitialized file on persistent storage keeps first-boot semantics throughout systemd.
-          boot.initrd.systemd.tmpfiles.settings.preservation."/sysroot/persistent/etc/machine-id".f.argument = "uninitialized\n";
+          boot.initrd.systemd.tmpfiles.settings.preservation."/sysroot/persistent/etc/machine-id".f.argument =
+            "uninitialized\n";
 
           boot.kernelModules = [
             # Enables (nested) virtualization through hardware acceleration.
