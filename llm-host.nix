@@ -274,11 +274,9 @@ in
               users.bert-proesmans = {
                 directories = [
                   # { directory = ".ssh"; mode = "0700"; }
-                  ".claude"
+                  ".config"
                 ];
-                files = [
-                  ".claude.json"
-                ];
+                files = [ ];
               };
             };
           };
@@ -357,7 +355,25 @@ in
 
           environment.systemPackages = [
             pkgs.git
-            pkgs.claude-code
+            (
+              let
+                claude-code = pkgs.latest.claude-code;
+              in
+              pkgs.symlinkJoin {
+                name = "${claude-code.name}-wrapped";
+                paths = [ claude-code ];
+                nativeBuildInputs = [ pkgs.makeShellWrapper ];
+                postBuild = ''
+                  # WARN; '--set' fails to do the expected thing, expanding $HOME at command invocation, because
+                  # it's being resolved at build time (to /homeless-shelter).
+                  # The argument RUN with an export will do exactly what we expect, at runtime.
+                  wrapProgram $out/bin/claude \
+                    --run 'export CLAUDE_CONFIG_DIR="$HOME/.config/claude"' \
+                    --set-default CLAUDE_CODE_DISABLE_AUTO_MEMORY 1 \
+                    --set-default CLAUDE_CODE_ENABLE_TASKS 0
+                '';
+              }
+            )
             pkgs.yazi
             pkgs.bat
           ];
