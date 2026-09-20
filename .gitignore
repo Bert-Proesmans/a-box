@@ -1,5 +1,6 @@
 result
 result-*
+.obsidian-mcp/
 /agent-vm/guest/target/
 /agent-vm/bpf/build/
 __pycache__/

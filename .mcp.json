@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "obsidian": {
+      "type": "stdio",
+      "command": "obsidian-mcp",
+      "args": ["/home/bert-proesmans/a-box/docs"],
+      "alwaysLoad": false,
+      "env": {
+        "OBSIDIAN_EMBEDDINGS": "true",
+        "OBSIDIAN_EMBEDDING_PROVIDER": "local",
+        "OBSIDIAN_TOOLS": "full"
+      }
+    }
+  }
+}
