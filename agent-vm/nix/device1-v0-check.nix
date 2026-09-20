@@ -1,9 +1,9 @@
 { pkgs, device1-v0 }:
 
-# Chunk B2/B3 check: the image contains exactly `/init` plus the four empty
-# pseudo-fs mount-point directories B3's pid1-init needs (see the comment
-# in device1-v0.nix - they can't be created at runtime on a read-only
-# root), nothing else.
+# Chunk B2/B3/C1 check: the image contains exactly `/init`, `/bin/echo_agent`
+# (chunk C1's stub agent), and the four empty pseudo-fs mount-point
+# directories B3's pid1-init needs (see the comment in device1-v0.nix - they
+# can't be created at runtime on a read-only root), nothing else.
 pkgs.runCommand "agent-vm-device1-v0-check"
   {
     nativeBuildInputs = [ pkgs.squashfsTools ];
@@ -14,6 +14,8 @@ pkgs.runCommand "agent-vm-device1-v0-check"
 
     printf '%s\n' \
       squashfs-root \
+      squashfs-root/bin \
+      squashfs-root/bin/echo_agent \
       squashfs-root/dev \
       squashfs-root/init \
       squashfs-root/proc \

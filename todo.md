@@ -12,7 +12,7 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
 
 - [x] A — Scaffolding
 - [x] B — Firecracker walking skeleton
-- [ ] C — vsock stdio + attach
+- [x] C — vsock stdio + attach
 - [ ] D — Host git mirror & service
 - [ ] E — Block devices & workspace
 - [ ] F — Network egress
@@ -69,24 +69,24 @@ Test markers used throughout: `needs_kvm` (requires `/dev/kvm`), `needs_root`
 
 ## Chunk C — vsock stdio + attach
 
-- [ ] **C1 — pid1 vsock stdio listener + stub echo agent**
-  - [ ] `ports.rs`: shared constants `STDIO_PORT`/`PROXY_PORT`/`BPF_PORT`
-  - [ ] `bind_vsock_listener`, accept once, spawn `echo_agent` with stdio dup2'd via `Spawner` trait
-  - [ ] `echo_agent` workspace member (echoes lines prefixed `"echo: "`)
-  - [ ] Device1-v0 squashfs updated to include both binaries
-  - [ ] Unit tests via `FakeSpawner` (assert wiring, no real vsock needed)
-- [ ] **C2 — Host vsock handshake + persistent SessionManager connection**
-  - [ ] `vsock_bridge.py`: `connect_guest_port` implementing `CONNECT <port>\n` / `OK` handshake
-  - [ ] Unit tests incl. malformed-reply failure case, against fake UDS server
-  - [ ] `ports.py` mirrors Rust port constants
-  - [ ] `session_manager.py`: `SessionManager` holds one persistent `stdio_sock`
-  - [ ] `needs_kvm` integration test: write `hello`, read back `echo: hello`
-- [ ] **C3 — terminal.jsonl recorder + attach/detach multiplexing**
-  - [ ] Background reader tees `stdio_sock` traffic into `terminal.jsonl` (base64 payload) regardless of attach state
-  - [ ] `attach.sock` local Unix socket; fan-out to N connected clients
-  - [ ] Detach/disconnect never touches `stdio_sock` or other clients
-  - [ ] Unit tests with fake sockets: fan-out, logging, disconnect isolation
-  - [ ] `needs_kvm` integration test: two attach clients, disconnect one, other keeps working, transcript correct
+- [x] **C1 — pid1 vsock stdio listener + stub echo agent**
+  - [x] `ports.rs`: shared constants `STDIO_PORT`/`PROXY_PORT`/`BPF_PORT`
+  - [x] `bind_vsock_listener`, accept once, spawn `echo_agent` with stdio dup2'd via `Spawner` trait - implemented as `VsockListener::bind`/`.accept()` (nix's AF_VSOCK support) plus a `Spawner` trait wiring stdio via `Stdio::from(File)` (dup'd via `try_clone`, no `unsafe` pre_exec needed)
+  - [x] `echo_agent` workspace member (echoes lines prefixed `"echo: "`)
+  - [x] Device1-v0 squashfs updated to include both binaries
+  - [x] Unit tests via `FakeSpawner` (assert wiring, no real vsock needed)
+- [x] **C2 — Host vsock handshake + persistent SessionManager connection**
+  - [x] `vsock_bridge.py`: `connect_guest_port` implementing `CONNECT <port>\n` / `OK` handshake - retries fresh connections on a closed-with-no-reply response (firecracker's documented "no listener yet" behavior), raises immediately on a malformed reply
+  - [x] Unit tests incl. malformed-reply failure case, against fake UDS server
+  - [x] `ports.py` mirrors Rust port constants
+  - [x] `session_manager.py`: `SessionManager` holds one persistent `stdio_sock` - also required adding vsock device configuration (`PUT /vsock`) to `FirecrackerVM`, absent since chunk B (B4 never needed one)
+  - [x] `needs_kvm` integration test: write `hello`, read back `echo: hello` - expressed via one attach client rather than raw `stdio_sock` access, since C3's background reader is the only thing allowed to read `stdio_sock` once `start()` runs
+- [x] **C3 — terminal.jsonl recorder + attach/detach multiplexing**
+  - [x] Background reader tees `stdio_sock` traffic into `terminal.jsonl` (base64 payload) regardless of attach state
+  - [x] `attach.sock` local Unix socket; fan-out to N connected clients
+  - [x] Detach/disconnect never touches `stdio_sock` or other clients
+  - [x] Unit tests with fake sockets: fan-out, logging, disconnect isolation - used `socket.socketpair()` real local socket pairs rather than hand-rolled fakes
+  - [x] `needs_kvm` integration test: two attach clients, disconnect one, other keeps working, transcript correct
 
 ## Chunk D — Host git mirror & service
 

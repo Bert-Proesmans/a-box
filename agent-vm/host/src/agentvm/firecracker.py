@@ -31,6 +31,14 @@ class FirecrackerProcessExited(Exception):
     something else (e.g. the API socket or a console log string)."""
 
 
+# Firecracker's own /vsock schema requires guest_cid >= 3 (2 is reserved
+# for the host). The value is otherwise inert here: the host side of a
+# vsock device is a UDS proxy with no peer-CID concept at all (spec
+# §11.1), and the guest binds its listeners with VMADDR_CID_ANY, so
+# nothing ever reads this number back.
+_VSOCK_GUEST_CID = 3
+
+
 @dataclass
 class FirecrackerVM:
     firecracker_binary: str
@@ -44,6 +52,11 @@ class FirecrackerVM:
     # kernel's fs-autoprobe fallback, since we know exactly what device1's
     # root device is.
     kernel_args: str = "console=ttyS0 root=/dev/vda ro rootfstype=squashfs init=/init"
+    # None means no vsock device at all (chunk B4's boot test doesn't need
+    # one). When set, Firecracker exposes it to the host as a UDS at this
+    # path - see vsock_bridge.py for the host-initiated connection
+    # handshake against it (chunk C2).
+    vsock_uds_path: Path | None = None
 
     _process: subprocess.Popen | None = field(default=None, init=False, repr=False)
     _console_fh: object | None = field(default=None, init=False, repr=False)
@@ -111,6 +124,8 @@ class FirecrackerVM:
         """Start the firecracker process and boot the configured VM."""
         if self.api_socket.exists():
             self.api_socket.unlink()
+        if self.vsock_uds_path is not None and self.vsock_uds_path.exists():
+            self.vsock_uds_path.unlink()
 
         self.console_log.parent.mkdir(parents=True, exist_ok=True)
         self._console_fh = self.console_log.open("wb")
@@ -148,6 +163,14 @@ class FirecrackerVM:
                     "mem_size_mib": self.mem_size_mib,
                 },
             )
+            if self.vsock_uds_path is not None:
+                self._put(
+                    "/vsock",
+                    {
+                        "guest_cid": _VSOCK_GUEST_CID,
+                        "uds_path": str(self.vsock_uds_path),
+                    },
+                )
             self._put("/actions", {"action_type": "InstanceStart"})
         except Exception:
             self._force_cleanup()

@@ -1,8 +1,9 @@
 { pkgs }:
 
-# Throwaway "Device 1 v0" root filesystem (chunk B2): a squashfs image
-# containing nothing but the pid1-init static binary as `/init`, just
-# enough to prove the boot path works. Chunk H replaces this with the real,
+# Throwaway "Device 1 v0" root filesystem (chunk B2, extended in C1): a
+# squashfs image containing the pid1-init static binary as `/init` plus
+# chunk C1's stub agent as `/bin/echo_agent`, just enough to prove the
+# boot + vsock stdio path works. Chunk H replaces this with the real,
 # full closure (coreutils/bash/git/python3/Claude Code CLI/...).
 let
   pid1-init = import ./guest-init.nix { inherit pkgs; };
@@ -14,6 +15,9 @@ pkgs.runCommand "agent-vm-device1-v0.squashfs"
   ''
     mkdir -p root
     install -m 0755 ${pid1-init}/bin/pid1-init root/init
+
+    mkdir -p root/bin
+    install -m 0755 ${pid1-init}/bin/echo_agent root/bin/echo_agent
 
     # B3's pid1-init mounts proc/sysfs/tmpfs onto /proc /sys /tmp at boot
     # (see pseudo_filesystem_mounts() in

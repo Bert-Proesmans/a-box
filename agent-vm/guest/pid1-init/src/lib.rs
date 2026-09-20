@@ -2,6 +2,9 @@
 // main.rs itself is hard to unit test since it's meant to run as pid 1.
 
 pub mod mount;
+pub mod ports;
+pub mod spawn;
+pub mod vsock;
 
 use std::io::{self, Write};
 

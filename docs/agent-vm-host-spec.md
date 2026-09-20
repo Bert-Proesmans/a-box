@@ -553,16 +553,17 @@ truncated. `bpf.jsonl` and `terminal.jsonl` are comparatively low-volume,
 compact event/byte streams where a 100 MB abuse backstop doesn't carry the
 same risk of discarding the most important record.
 
-> **Open wire-level detail** (§15): whether the interactive stdio channel
-> and the terminal-transcript tap are literally the same vsock connection
-> observed from the host side (a single host-initiated connection, tapped
-> for recording and fanned out to N attach clients — the model assumed
-> above, requiring no guest-side change beyond pid1's existing design) or
-> become two separate guest-side connections (one interactive, one a
-> guest-initiated logging push symmetric with proxy/bpf) was not fully
-> pinned down by the discussion that produced this section, which focused
-> on the proxy/bpf case. Revisit if implementation makes the single-tapped-
-> connection model awkward.
+> **Resolved** (§15, chunk C3): the interactive stdio channel and the
+> terminal-transcript tap are literally the same vsock connection observed
+> from the host side — one host-initiated connection, tapped for recording
+> and fanned out to N attach clients, no guest-side change beyond pid1's
+> existing design. Implemented in `session_manager.py`: a single background
+> reader thread owns the only `recv()` calls on `stdio_sock`, logging every
+> chunk to `terminal.jsonl` and broadcasting it to whichever attach clients
+> are currently connected; attach clients themselves are handled by
+> separate per-client threads that only ever call `sendall()` on
+> `stdio_sock`, so there's no reader contention. Proved end-to-end in
+> `test_session_manager_kvm.py`.
 
 ### 11.2 Inactivity watchdog
 
@@ -896,6 +897,11 @@ landed in):
   (the host's own DNS resolution result, §5.1.1) and a
   `credential_injected` boolean from F3's addon, so the log records *when*
   the real key went out without ever containing its value.
+- **Terminal-transcript wire-level mechanism** (§11.1) — the interactive
+  stdio channel and the terminal-transcript tap are the same host-initiated
+  vsock connection, tapped by a single reader thread and fanned out to N
+  attach clients (chunk C3) — see the resolved callout in §11.1 for the
+  concurrency argument.
 
 Still open:
 
@@ -910,10 +916,6 @@ Still open:
 - **Host memory: swap and KSM** (§12.4) — whether/how to disable swap (or
   secure it) and disable KSM has not been decided against `llm-host.nix`'s
   actual configuration (zram root, no swap partition currently defined).
-- **Terminal-transcript wire-level mechanism** (§11.1) — whether recording
-  taps the same host-initiated connection used for interactive attach, or
-  becomes a second, guest-initiated logging push symmetric with bpf's
-  receiver, is not fully pinned down.
 - **mitmproxy multi-listener support** (§5.2.1) — needs confirming that a
   single mitmproxy process can bind multiple simultaneous listen addresses
   (one per concurrency slot) before implementation starts on the

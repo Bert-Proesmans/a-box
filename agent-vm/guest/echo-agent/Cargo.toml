@@ -1,0 +1,8 @@
+[package]
+name = "echo-agent"
+version = "0.0.1"
+edition = "2021"
+
+[[bin]]
+name = "echo_agent"
+path = "src/main.rs"

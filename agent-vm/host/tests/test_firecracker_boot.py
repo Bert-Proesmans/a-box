@@ -1,15 +1,12 @@
 """Chunk B4: boot a real microVM and prove pid1-init reaches liveness.
 
-Builds B1's kernel and B2/B3's device1-v0 image via `nix-build` against
-agent-vm/nix (session-scoped, so repeat runs are instant once Nix has
-cached them) rather than requiring out-of-band environment wiring - this
-keeps `pytest agent-vm/host` runnable standalone from within the devshell.
+Uses the `guest_kernel_image`/`device1_v0_image` fixtures from conftest.py
+(built via `nix-build` against agent-vm/nix).
 """
 
 from __future__ import annotations
 
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -17,31 +14,7 @@ import pytest
 
 from agentvm.firecracker import FirecrackerVM
 
-AGENT_VM_NIX_DIR = Path(__file__).resolve().parents[2] / "nix"
-
 LIVENESS_MESSAGE = "pid1-init: alive"
-
-
-def _nix_build(attr: str) -> Path:
-    result = subprocess.run(
-        ["nix-build", str(AGENT_VM_NIX_DIR), "-A", attr, "--no-out-link"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return Path(result.stdout.strip().splitlines()[-1])
-
-
-@pytest.fixture(scope="session")
-def guest_kernel_image() -> Path:
-    # vmlinux (not the default bzImage) is copied out alongside it - see
-    # the comment in guest-kernel.nix for why.
-    return _nix_build("guest-kernel") / "vmlinux"
-
-
-@pytest.fixture(scope="session")
-def device1_v0_image() -> Path:
-    return _nix_build("device1-v0")
 
 
 @pytest.mark.needs_kvm
