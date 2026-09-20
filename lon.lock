@@ -7,17 +7,25 @@
       "owner": "nix-community",
       "repo": "disko",
       "branch": "master",
-      "revision": "ff8702b4de27f72b4c78573dfb89ec74e36abdf1",
-      "url": "https://github.com/nix-community/disko/archive/ff8702b4de27f72b4c78573dfb89ec74e36abdf1.tar.gz",
-      "hash": "sha256-RxWs5ND31KzTG7wvMM+PMfUjyNpmIEr999lqNARaM5o="
+      "revision": "725ea35e410ad83be4931d1bff7e090eacaf3563",
+      "url": "https://github.com/nix-community/disko/archive/725ea35e410ad83be4931d1bff7e090eacaf3563.tar.gz",
+      "hash": "sha256-uZkBR7yHdIKUFB5SZdfgh1qkGfI3XmYmI/lTiquxbck="
+    },
+    "nixos": {
+      "type": "Tarball",
+      "fetchType": "tarball",
+      "origin": "https://channels.nixos.org/nixos-unstable/nixexprs.tar.zst",
+      "revision": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "url": "https://releases.nixos.org/nixos/unstable/nixos-26.11pre1076192.20b1ddd1aa5a/nixexprs.tar.zst?rev=20b1ddd1aa5ace70c9468305030aa4f9ef79671b&lastModified=1789785513",
+      "hash": "sha256-BMbikTjbh5H7ac/OjwGoJrlooh4dgNqhs51ABM83M7g="
     },
     "nixpkgs": {
       "type": "Tarball",
       "fetchType": "tarball",
       "origin": "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst",
-      "revision": "aff8a0b28396750446e5537a96461bc4facdb287",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1071116.aff8a0b28396/nixexprs.tar.zst?rev=aff8a0b28396750446e5537a96461bc4facdb287&lastModified=1789073787",
-      "hash": "sha256-vLblJRFZjrSBOyHD4jwBkGJm2iOVk8c9BJnzZTOojSc="
+      "revision": "0a3468a402c449992505b6a9fc5b06580141b750",
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1075779.0a3468a402c4/nixexprs.tar.zst?rev=0a3468a402c449992505b6a9fc5b06580141b750&lastModified=1789724158",
+      "hash": "sha256-a+eLlfZMyiiI5LIQ946grNITLv+FMldenpy02jbE3NI="
     },
     "preservation": {
       "type": "GitHub",

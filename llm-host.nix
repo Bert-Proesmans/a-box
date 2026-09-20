@@ -8,16 +8,16 @@ let
 
   # Collection of helper methods.
   # SEEALSO; https://noogle.dev
-  lib = (import (sources.nixpkgs + "/lib")).extend (
+  lib = (import (sources.nixos + "/lib")).extend (
     final: _prev: {
       # WARN; Extend by namespacing additional functionality to not clobber symbols used by upstream/downstream code!s
 
       # Includes runTest and evalModules helpers.
-      nixos = import (sources.nixpkgs + "/nixos/lib") { lib = final; };
+      nixos = import (sources.nixos + "/nixos/lib") { lib = final; };
     }
   );
 
-  _nixosSystemFunc = import (sources.nixpkgs + "/nixos/lib/eval-config.nix");
+  _nixosSystemFunc = import (sources.nixos + "/nixos/lib/eval-config.nix");
   # Function that wraps system configuration into something to be eval'ed and built.
   nixosSystem =
     newArgs:
@@ -50,11 +50,25 @@ in
         {
           system.stateVersion = "26.05";
           nixpkgs.hostPlatform = "x86_64-linux";
-          nixpkgs.config.allowUnfreePredicate =
-            pkg:
-            builtins.elem (lib.getName pkg) [
-              "claude-code"
-            ];
+          nixpkgs.overlays = [
+            (
+              let
+                latest = (import sources.nixpkgs) {
+                  localSystem.system = pkgs.stdenv.hostPlatform.system;
+                  config = config.nixpkgs.config // {
+                    allowUnfreePredicate =
+                      pkg:
+                      builtins.elem (lib.getName pkg) [
+                        "claude-code"
+                      ];
+                  };
+                };
+              in
+              (final: prev: {
+                inherit latest;
+              })
+            )
+          ];
 
           imports = [
             (sources.disko + "/module.nix")
