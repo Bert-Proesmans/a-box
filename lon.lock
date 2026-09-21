@@ -27,6 +27,16 @@
       "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1075779.0a3468a402c4/nixexprs.tar.zst?rev=0a3468a402c449992505b6a9fc5b06580141b750&lastModified=1789724158",
       "hash": "sha256-a+eLlfZMyiiI5LIQ946grNITLv+FMldenpy02jbE3NI="
     },
+    "obsidian-mcp": {
+      "type": "GitHub",
+      "fetchType": "tarball",
+      "owner": "Bert-Proesmans",
+      "repo": "obsidian-mcp",
+      "branch": "main",
+      "revision": "b3f49605b5c602b72c0da8c1b1c2c39fff575702",
+      "url": "https://github.com/Bert-Proesmans/obsidian-mcp/archive/b3f49605b5c602b72c0da8c1b1c2c39fff575702.tar.gz",
+      "hash": "sha256-UBgToZVVYz6216IhhajWVqDrXbSIPNdl/VKth8s/ups="
+    },
     "preservation": {
       "type": "GitHub",
       "fetchType": "tarball",

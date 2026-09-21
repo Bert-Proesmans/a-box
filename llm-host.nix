@@ -377,6 +377,7 @@ in
             )
             pkgs.yazi
             pkgs.bat
+            (pkgs.callPackage ./obsidian-mcp.nix { inherit sources; })
           ];
 
           services.btrfs.autoScrub = {
