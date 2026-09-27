@@ -43,18 +43,19 @@ credential-injection tag and slot-assignment file
 of those (a throwaway echo listener, a simulated launch/stop call), that is
 called out explicitly as throwaway, not as that component's real deliverable.
 
-**Open gap check:** [[15-decisions-log]]'s "Still open" section has two items
-tagged against this spec, both flagged explicitly below rather than guessed:
-"Package registry strategy per ecosystem" (Step 3.2 — no package-registry
-allowlist entry of any kind is added by this plan) and "mitmproxy
-multi-listener support" (Step 5.2 — must be confirmed before building the
-per-slot-listener mechanism; if unsupported, the fallback is one mitmproxy
-instance per slot instead of one host-wide singleton). Five other decisions
-from that log are already resolved and folded into their relevant steps
-below instead of being re-derived: "vsock↔TCP shim implementation" (Step
-1.1), "`proxy.jsonl` per-session split" (Steps 5.1–5.2), and "`proxy.jsonl`
-content: resolved IP + credential-injection audit" (Step 4.1).
-
+**Resolution status:** all three items [[15-decisions-log]] once listed as
+open against this spec are now resolved and folded into the steps below,
+not re-derived: "package registry strategy per ecosystem" (Step 3.2 — this
+guest has no runtime package-install path for any ecosystem at all; nothing
+is added, or ever expected to be added, to the allowlist for it), "mitmproxy
+multi-listener support" (Step 5.2 — confirmed against mitmproxy's own
+source), and "static vs. dynamic per-slot listener lifecycle" (Step 5.2 —
+the full slot pool is pre-bound once at startup, not opened/closed per
+session). Three further decisions from that log were already resolved
+before this plan existed and are likewise folded in rather than re-derived:
+"vsock↔TCP shim implementation" (Step 1.1), "`proxy.jsonl` per-session
+split" (Steps 5.1–5.2), and "`proxy.jsonl` content: resolved IP +
+credential-injection audit" (Step 4.1).
 ## Chunks
 
 1. **Chunk 1 — Guest-side transport foundation.** The vsock↔TCP shim binary
@@ -357,16 +358,16 @@ configuration (which is the actual read-only enforcement — see
 request whose path contains `git-receive-pack` directed at that loopback
 entry, even though the backend doesn't expose that service anyway.
 
-Open gap (from [[15-decisions-log]], not resolved here): package registry
-strategy per ecosystem (pip, npm, etc.) is not decided — it may go through a
-local caching/pull-through mirror matching the git approach, or be
-domain-allowlisted direct-to-internet, decided per ecosystem as each is
-actually added. No ecosystem beyond git is wired in yet. Do not guess an
-answer for this — the allowlist mechanism from the previous step already
-supports both shapes of entry (loopback-style for a future local mirror,
-domain-style for direct internet), which is what makes either future choice
-possible without redesigning the mechanism; this task does not add any
-package-registry entry of either kind.
+Package-registry strategy, resolved in [[15-decisions-log]]: this guest
+never does live, runtime package-manager installs against any registry, for
+any ecosystem — everything a session needs is pre-baked into
+[[09-guest-rootfs|the guest rootfs Nix closure]] before the session starts,
+and a repo needing something not already baked in gets that dependency
+added to the tool allowlist and the image rebuilt, not fetched over the
+network at runtime. This task therefore does not add, and is not expected
+to ever need, a package-registry allowlist entry of either shape
+(domain-style or loopback-mirror-style) — unlike the Anthropic API and git
+entries above, there is no third real entry pending here.
 
 Task: configure the allowlist addon from the previous step with exactly its
 two real entries — the Anthropic API domain, and the git service's exact
@@ -383,9 +384,6 @@ entry is rejected even though nothing else changed, and a request to any
 other domain or loopback/private-range address is still blocked exactly as
 the previous step proved.
 ```
-
----
-
 ## Step 4.1 — Credential injection addon
 
 Chunk 4, single step. Builds on Step 3.2's finalized allowlist entries.
@@ -499,18 +497,25 @@ Context already built: a shared slot allocator handing out and releasing
 integer slot indices from a fixed-size pool, with persisted state safe for
 concurrent, separately-invoked callers.
 
-Open gap (from [[15-decisions-log]], to confirm before proceeding, not
-assumed true here): mitmproxy must support binding multiple simultaneous
-listen addresses in one process (multiple `mode` entries) for this design to
-work as one host-wide singleton. If it does not, the fallback is one
-mitmproxy instance per slot instead of one shared process, which changes
-the "host-wide singleton" framing used elsewhere in this subsystem
-([[10-session-lifecycle-orchestration]]). Before building the rest of this
-task, confirm this capability against the mitmproxy version this repo
-targets; if unsupported, stop and produce a per-slot-instance variant of
-this task's deliverable instead (one mitmproxy engine process per slot, each
-on its own single fixed port, rather than one process with N listeners) and
-note that substitution explicitly in your output.
+Resolved in [[15-decisions-log|the mitmproxy multi-listener decision]]:
+mitmproxy's `mode` option is a sequence, and its `proxyserver` addon
+creates one independent server instance per parsed mode spec, rejecting
+only exact duplicate listen addresses — so binding N independent forward-
+proxy listeners (`--mode regular@<port>`, repeated) in one process is
+supported.
+
+Also resolved, in [[15-decisions-log|the static-vs-dynamic listener
+lifecycle decision]]: this task binds the *entire* pool (all
+`max_concurrent_sessions` ports) once, at mitmproxy startup, and never
+touches mitmproxy's own listener set again — a VM session's launch/stop
+only ever changes the slot-assignment file's mapping, not which ports are
+listening. mitmproxy does support adding/removing listeners at runtime
+too (via `ctx.options.update(mode=...)`), but that path is deliberately
+not used here: verified against mitmproxy's own connection-handling source
+that every accepted client connection gets entirely fresh handler/
+connection-reuse state regardless of listener lifetime, so pre-binding the
+static pool carries no extra cross-session leakage risk and avoids
+building a second runtime control path into a long-lived process.
 
 Specification facts for this task: mitmproxy binds one additional TCP
 listen port per concurrency slot — a fixed pool of size
@@ -527,6 +532,12 @@ never restarts between sessions. mitmproxy's own future transcript addon
 flow's session by reading the local port the connection arrived on and
 looking it up against this file — this task must produce a file format and
 update mechanism that addon can rely on, without building the addon itself.
+Per the standing safeguard in [[15-decisions-log|the static-vs-dynamic
+listener lifecycle decision]], that future addon must perform this lookup
+fresh for every flow and must never cache or carry a resolved session
+across flows on the same port — this task's file format and update
+mechanism must make that live-lookup usage pattern the natural one (e.g.
+no assumption that a reader may snapshot the file once and reuse it).
 
 Task: extend the mitmproxy engine (allowlist + credential injection intact)
 to bind one TCP listen port per slot in the pool, at a fixed base port plus
@@ -543,9 +554,13 @@ shows two distinct port→session_id mappings, confirm mitmproxy is actually
 listening on both corresponding ports (e.g. via a bare TCP connect probe to
 each), release one slot and confirm its assignment-file entry clears while
 the other slot's mapping and listener remain intact and correctly
-associated.
+associated. As a recycling proof: acquire a slot, release it, then acquire
+a different session into that same slot/port and confirm the
+slot-assignment file now reflects only the new occupant with no trace of
+the previous one — proving the mapping itself never bleeds state across
+occupants, matching the connection-level isolation mitmproxy already
+provides.
 ```
-
 ## Step 5.3 — Slot-aware guest shim and host relay
 
 Chunk 5, third and final step. Builds on Step 1.1's shim, Step 2.2's relay,
@@ -596,10 +611,12 @@ produces correctly.
 
 - [[05-network-egress-control]] — the spec this plan implements.
 - [[15-decisions-log]] — resolved "vsock↔TCP shim implementation" (Step
-  1.1), "`proxy.jsonl` per-session split" (Steps 5.1–5.2), and "`proxy.jsonl`
-  content: resolved IP + credential-injection audit" (Step 4.1); still-open
-  "Package registry strategy per ecosystem" (Step 3.2) and "mitmproxy
-  multi-listener support" (Step 5.2) flagged as open gaps, not guessed.
+  1.1), "`proxy.jsonl` per-session split" (Steps 5.1–5.2), "`proxy.jsonl`
+  content: resolved IP + credential-injection audit" (Step 4.1),
+  "package-registry strategy per ecosystem" (Step 3.2 — no runtime
+  installs, ever), "mitmproxy multi-listener support" (Step 5.2), and
+  "static vs. dynamic per-slot listener lifecycle" (Step 5.2) — all six
+  folded into their respective steps, none open.
 - [[03-vmm-firecracker-plan]] — Step 4's per-VM dedicated vsock transport is
   the device-model dependency Steps 1.1 and 2.2 rely on.
 - [[04-guest-pid1-init-plan]] — Step 2.2's placeholder proxy-shim child

@@ -143,13 +143,99 @@ host-initiated vsock connection, tapped by a single reader thread and
 fanned out to N attach clients (chunk C3) — see the resolved callout at
 [[11-session-transcript-receivers]] for the concurrency argument.
 
+
+### Package registry strategy per ecosystem #decision
+
+Relates to [[05-network-egress-control|package registry proxying]] and
+[[09-guest-rootfs|the guest tool allowlist]]. **Revised** — the guest never
+does live, runtime package-manager installs from any registry, for any
+ecosystem, full stop; this isn't a policy about *which* mechanism a future
+pip/npm install would use, it's that no such install path exists or is
+intended. Everything a session needs (interpreters, test/fuzz frameworks,
+any interpreter-level libraries) must already be present in
+[[09-guest-rootfs|the guest rootfs Nix closure]] before the session
+starts — a repo whose test/build/run path needs something not already
+baked in gets that library added to the tool allowlist and the image
+rebuilt ([[09-guest-rootfs|the existing rebuild-on-allowlist-change
+path]]), not a live fetch at runtime. Consequently mitmproxy's egress
+allowlist is not expected to ever need a package-registry domain entry
+under normal operation — the earlier domain-allowlist-vs-mirror framing
+for *if* one were ever added is moot, not merely deferred. `pip`/`npm`
+inclusion in the tool allowlist itself (as installers acting only against
+already-vendored local packages, if included at all) remains a separate,
+ordinary tool-allowlist curation call, no different from adding any other
+CLI tool.
+### Host memory: swap and KSM #decision
+
+Relates to [[12-production-hardening|KVM/host tuning]] and
+[[02-host-platform]]. Both disabled — matching Firecracker's own
+production-host-setup guidance: swap disabled to prevent guest memory
+being written to persistent storage under memory pressure (data-remanence
+risk after a session ends), KSM disabled to prevent a cross-tenant
+page-deduplication side channel letting one guest infer another's memory
+access patterns — the same "tenants sharing a physical host" reasoning
+already used in this subsystem to disable SMT (see
+[[12-production-hardening]]). `llm-host.nix`'s actual running host
+configuration (the `nixosSystem` output, not the separate `installer`
+config in the same file) already satisfies both today: no swap device is
+ever activated (zram backs only the ephemeral root filesystem;
+`zramSwap.enable` and `services.zram-generator.enable` are both explicitly
+forced off) and KSM is left at NixOS's own off-by-default
+(`hardware.ksm.enable` is never set anywhere in the host config). This
+decision makes both facts explicit, verified platform guarantees — with a
+boot-time check alongside the existing KVM/cgroup v2 checks, and a future
+`doctor`-reportable status — instead of implicit defaults that could
+silently drift.
+
+### mitmproxy multi-listener support #decision
+
+Relates to [[05-network-egress-control|mitmproxy's per-session slot
+ports]] and [[10-session-lifecycle-orchestration]]. Confirmed supported:
+mitmproxy's `mode` option is a sequence, and its `proxyserver` addon
+creates one independent `ServerInstance` per parsed mode spec (verified
+against `mitmproxy/addons/proxyserver.py` on the project's `main` branch),
+rejecting only exact duplicate listen addresses — not distinct
+addresses/ports of the same mode type. `mitmdump --mode regular@<port1>
+--mode regular@<port2>` therefore runs two independent forward-proxy
+listeners in one process, which is exactly what the "one host-wide
+singleton, N per-slot listen ports" design in
+[[05-network-egress-control]] needs. The one-mitmproxy-instance-per-slot
+fallback sketched alongside this open question is no longer needed.
+
+### Static vs. dynamic per-slot listener lifecycle #decision
+
+Relates to [[05-network-egress-control|mitmproxy's per-session slot
+ports]]. Slots are pre-bound as a static, full-size pool at mitmproxy
+startup (one listener per `max_concurrent_sessions` slot, all always up)
+— not opened/closed dynamically per VM session, even though mitmproxy
+supports that too (its `proxyserver` addon's `configure()` re-diffs
+`self._instances` against `ctx.options.mode` on any runtime change,
+starting/stopping `ServerInstance`s with no process restart — a confirmed
+capability, just not the one used here). Matches the hugepage pool's own
+"statically sized at host boot" precedent.
+
+Considered and ruled out as a reason to prefer dynamic: cross-session
+information leakage through connection/buffer reuse on a recycled slot.
+Verified against mitmproxy source (`mitmproxy/proxy/server.py`,
+`mitmproxy/proxy/layers/http/__init__.py`): every accepted client TCP
+connection gets its own fresh `ConnectionHandler`/`Context`/`Layer` tree,
+and the destination-matched upstream-connection reuse cache
+(`HttpLayer.connections`) lives on that per-connection `HttpLayer`
+instance — scoped to one client socket, not to the listening
+`ServerInstance`. A new guest VM connecting to a previously-used slot port
+gets entirely fresh handler/connection state; nothing (buffers, pooled
+upstream connections, per-flow objects) carries over from the prior
+occupant. This holds identically whether the listener itself is long-lived
+(static) or freshly created per session (dynamic) — so the listener
+lifecycle choice has no bearing on this risk.
+
+Standing safeguard regardless of listener model: the credential-injection/
+transcript addon must resolve "which session does this flow belong to"
+fresh per-flow via the slot-assignment file (arrival port → session_id
+lookup) — never cache or carry that resolution across flows on the same
+port. This is the one place cross-session bleed could actually be
+introduced (an addon bug), not mitmproxy's own connection handling.
 ## Still open
-
-### Package registry strategy per ecosystem #open-question
-
-Relates to [[05-network-egress-control|package registry proxying]]. Local caching mirror vs.
-direct-through-proxy, decided as ecosystems (pip, npm, etc.) are actually
-needed. No ecosystem beyond git has been wired in yet.
 
 ### Resource limits → systemd unit property mapping #open-question
 
@@ -158,31 +244,15 @@ knobs (`blkio.throttle.*`, `memory.limit_in_bytes`,
 `cpu.shares`/`cfs_quota_us`, jailer `fsize`/`no-file`) become declarative
 unit directives (`MemoryMax=`, `CPUQuota=`, `IOWeight=`) versus jailer's
 own raw `--cgroup`/`--resource-limit` flags is undecided.
-
-### Host memory: swap and KSM #open-question
-
-Relates to [[12-production-hardening|KVM/host tuning]] and [[02-host-platform]].
-Whether/how to disable swap (or secure it) and disable KSM has not been
-decided against `llm-host.nix`'s actual configuration (zram root, no swap
-partition currently defined).
-
-### mitmproxy multi-listener support #open-question
-
-Relates to [[05-network-egress-control|mitmproxy's per-session slot ports]] and
-[[10-session-lifecycle-orchestration]]. Needs confirming that a single
-mitmproxy process can bind multiple simultaneous listen addresses (one
-per concurrency slot) before implementation starts on the
-`proxy.jsonl`-per-session-split mechanism; if it can't, the fallback is
-one mitmproxy instance per slot instead of one host-wide singleton,
-changing that service's "host-wide singleton" framing.
-
 ## Related
 
 - [[05-network-egress-control]] — vsock↔TCP shim, `proxy.jsonl` split and
-  content, and the package-registry open question all live here.
+  content, the mitmproxy multi-listener decision, and the package-registry
+  strategy decision all live here.
 - [[06-workspace-and-repo-delivery]] — the `git-http-backend` wrapping
   decision.
-- [[09-guest-rootfs]] — Nix closure isolation mechanism.
+- [[09-guest-rootfs]] — Nix closure isolation mechanism; the guest tool
+  allowlist the package-registry decision constrains.
 - [[03-vmm-firecracker]] — guest kernel build format constraints
   (`vmlinux` vs `bzImage`).
 - [[04-guest-pid1-init]] — vsock syscall dependency choice.
@@ -190,12 +260,13 @@ changing that service's "host-wide singleton" framing.
   privilege ordering relative to capability drop.
 - [[10-session-lifecycle-orchestration]] — the superseded daemon/CLI and
   concurrency models, host-wide config source, and the mitmproxy
-  multi-listener open question.
+  multi-listener decision.
 - [[11-session-transcript-receivers]] — transcript delivery, growth
   bounding, inactivity watchdog, and terminal-transcript wire mechanism.
 - [[12-production-hardening]] — hugepages mode, process isolation model,
-  resource-limit mapping, and host memory (swap/KSM) open questions.
+  the still-open resource-limit mapping question, and the host memory
+  (swap/KSM) decision.
 - [[02-host-platform]] — cgroup v2-only decision and host memory
-  configuration context.
+  (swap/KSM) configuration context.
 - [[13-error-handling-failure-modes]] — the inactivity watchdog reuses
   this component's stop-cascade mechanism.
