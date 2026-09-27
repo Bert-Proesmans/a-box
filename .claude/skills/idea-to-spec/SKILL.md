@@ -1,9 +1,9 @@
 ---
-name: stakeholder-interview
 description: Turn a rough idea into a developer-ready specification through an iterative, one-question-at-a-time interview. Use when a stakeholder describes a project at a high level and wants a thorough, detailed spec built up collaboratively rather than guessed at in one pass.
+name: idea-to-spec
 ---
 
-# Stakeholder Interview
+# Idea To Spec
 
 This is the approach used to turn "a virtual machine host that holds
 ram-resident kvm guests running an llm code agent..." into a full,
