@@ -5,6 +5,7 @@ spec-section: §7
 tags:
 - agent-vm-host
 - spec-component
+- implementation-note
 ---
 
 # BPF Monitoring
@@ -23,6 +24,17 @@ Independent, in-guest audit trail of process, network, file, and DNS activity, e
 
 - The compiled eBPF program + small libbpf-based loader binary is invoked by the Rust [[04-guest-pid1-init|pid1-init]] as one of its setup steps (step 4 of its sequence).
 
+
+### Guest kernel prerequisites
+
+CO-RE relocation and tracepoint/kprobe-based capture require kernel-side support that [[03-vmm-firecracker|the guest kernel's baseline build]] does not include — that derivation is deliberately minimal and stays a standalone, working artifact in its own right. This component's kernel needs, additively, on top of that baseline:
+
+- `CONFIG_BPF`, `CONFIG_BPF_SYSCALL` — BPF subsystem and syscall support.
+- `CONFIG_DEBUG_INFO_BTF` — kernel-embedded BTF, required for CO-RE relocation without shipping a separate external BTF file.
+- `CONFIG_KPROBES`, `CONFIG_KPROBE_EVENTS` — kprobe attach points.
+- `CONFIG_BPF_EVENTS`, `CONFIG_PERF_EVENTS` — tracepoint/kprobe BPF program attachment goes through the perf_event subsystem.
+
+#implementation-note This is this component's own responsibility to layer onto the baseline kernel build, not a change to [[03-vmm-firecracker]]'s minimal derivation itself.
 ### Captured events
 
 - **Process exec** (`execve` + args) — every command the agent/shell runs.
@@ -57,3 +69,4 @@ Independent, in-guest audit trail of process, network, file, and DNS activity, e
 - [[05-network-egress-control|Network Egress Control]] — BPF's network-syscall capture is redundant-by-design belt-and-suspenders on top of the "no virtio-net" boundary this note enforces.
 - [[10-session-lifecycle-orchestration|Session Lifecycle & Host Orchestration]] — runs the BPF receiver as a per-session systemd unit.
 - [[13-error-handling-failure-modes|Error Handling & Failure Modes]] — defines what (if anything) happens when violations are flagged, beyond logging.
+- [[03-vmm-firecracker]] — the baseline guest kernel this component's capture mechanism needs additional CONFIG flags layered onto (see Guest kernel prerequisites above); that baseline stays minimal and standalone.
