@@ -42,29 +42,23 @@ VMM launcher, the pid1 binary, a CA certificate/key pair), that is called
 out explicitly as a pre-existing input to this component, not something
 this plan produces.
 
-**Open gap check:** [[15-decisions-log]]'s "Still open" section has no item
-tagged directly against [[09-guest-rootfs]]. Its resolved "Nix closure
-isolation mechanism" decision — nixpkgs' own `make-squashfs` closure
-helper, producing an image with its own isolated `/nix/store` prefix,
-rather than bind-mounting the host's — is folded into Step 1 below. Two
-adjacent items from [[05-network-egress-control]] are not decisions but do
-bear directly on this component's own build, and are flagged here rather
-than guessed at:
-
-> [!warning] Open gap — package-manager tools and proxy-honoring verification
-> [[05-network-egress-control]]'s "Package registry strategy per ecosystem"
-> open question is unresolved for every ecosystem beyond git — no decision
-> exists yet on whether pip/npm/etc. go through a caching mirror or
-> direct-allowlisted egress. Until that's resolved, this plan's tool
-> allowlist (Step 1) should be scoped to the CLI tools and Claude Code CLI
-> the spec actually names, not speculative package-manager additions whose
-> egress path isn't decided. Separately, that spec's implementation note —
-> that every tool in the closure must actually honor `http_proxy`/
-> `https_proxy` for all of its network paths, since some package managers
-> have bugs or fallback code paths that resolve/connect directly — is a
-> standing per-tool verification obligation on this component, folded into
-> Step 1's own verification below rather than treated as a one-time check.
-
+**Resolution status:** [[15-decisions-log]]'s "Still open" section has no
+item tagged directly against [[09-guest-rootfs]]. Its resolved "Nix
+closure isolation mechanism" decision — nixpkgs' own `make-squashfs`
+closure helper, producing an image with its own isolated `/nix/store`
+prefix, rather than bind-mounting the host's — is folded into Step 1
+below. Two further items from [[05-network-egress-control]] bear directly
+on this component's own build and are likewise resolved and folded into
+Step 1, not open: the "package-registry strategy" decision — this guest
+has no runtime dependency-installation path for any ecosystem at all;
+everything a session needs must already be in this image's closure before
+the session starts, so this plan's tool allowlist (Step 1) stays scoped to
+the CLI tools and Claude Code CLI the spec actually names, with no
+speculative package-manager tooling added — and the spec's standing
+implementation note that every tool in the closure must actually honor
+`http_proxy`/`https_proxy` for all of its network paths, folded into
+Step 1's own verification (part d) as a repeatable per-tool obligation,
+not a one-time check.
 ## Chunks
 
 1. **Chunk 1 — Self-contained Nix closure.** Build the isolated-store
@@ -110,11 +104,14 @@ reach anything, every tool in the closure must actually honor those
 variables for all of its own network code paths — some tools have bugs or
 fallback paths that ignore proxy configuration and try a direct
 connection/resolution instead. Package-manager tools beyond git (pip, npm,
-etc.) are not yet decided for inclusion — a separate, still-open decision
-governs how their registry traffic would even reach the network — so keep
-this step's allowlist to the CLI tools and Claude Code CLI the
-specification actually names; do not add speculative package-manager
-tooling here.
+etc.) are not included here, and if ever included must never be wired to a
+live registry: per [[15-decisions-log|the package-registry strategy
+decision]], this guest has no runtime dependency-installation path for any
+ecosystem — every library a session needs must already be in this image's
+closure before the session starts, added via this same allowlist and a
+rebuild, never fetched over the network at task time. Keep this step's
+allowlist to the CLI tools and Claude Code CLI the specification actually
+names; do not add speculative package-manager tooling here.
 
 Task: define an explicit, single, named list — the "tool allowlist" — that
 enumerates exactly which CLI tools, the Python interpreter, and the Claude
@@ -142,7 +139,6 @@ connection — this is the per-tool proxy-honoring smoke test the design
 calls for, and it must be repeatable for any tool added to the allowlist
 later, not just run once now.
 ```
-
 ## Step 2 — Bootable init wiring
 
 Chunk 2, single step. Builds on Step 1's closure image. The guest kernel
@@ -283,9 +279,9 @@ until the allowlist changes — is now built and machine-verified.
 
 - [[09-guest-rootfs]] — the spec note this plan derives from.
 - [[15-decisions-log]] — resolved "Nix closure isolation mechanism"
-  decision folded into Step 1; the package-registry and proxy-honoring
-  open items from [[05-network-egress-control]] flagged as this plan's
-  open gap.
+  decision folded into Step 1; the package-registry strategy decision
+  (no runtime package installs, ever — everything pre-baked) also folded
+  into Step 1.
 - [[06-workspace-and-repo-delivery]] — device 1's place in the
   three-block-device layout; owns device 2/3 content, out of scope here.
 - [[03-vmm-firecracker-plan]] — the kernel, no-initrd boot contract, and
@@ -293,8 +289,11 @@ until the allowlist changes — is now built and machine-verified.
 - [[04-guest-pid1-init-plan]] — the already-built pid1 binary wired into
   this image's boot path in Step 2.
 - [[05-network-egress-control]] — supplies the CA certificate consumed in
-  Step 3; owns the still-open package-registry and proxy-honoring items
-  flagged in this plan's open gap.
+  Step 3; which package-manager tools (if any) belong in the guest closure
+  at all remains a separate, ordinary tool-allowlist curation call — not
+  gated on network access, since none is ever granted for that purpose.
+  Step 1's own proxy-honoring smoke test (part d) is a standing per-tool
+  verification duty this design calls for, not an open item.
 - [[08-in-guest-hardening]] — the whitelisted tool set built here is why a
   seccomp allowlist was judged not worth the added cost.
 - [[02-host-platform-plan]] — Step 1.2's package/build-store subvolume is
