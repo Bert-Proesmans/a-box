@@ -81,28 +81,10 @@ scale, not just why it's a good practice in the abstract.
 ## Producing the deliverable
 
 The deliverable is a single note in the Obsidian vault — not a repo file,
-not a chat reply. Every step below is chosen for token cost, not just
-correctness: the MCP round-trip and the payload size both count.
+not a chat reply. Follow AGENTS.md's vault interaction discipline for the
+mechanics (search before read, batch reads, `note_patch` over
+`note_write`, link late, hand off via `open_in_obsidian`).
 
-1. **Before drafting, search — don't read.** `search_text`/`search_semantic`
-   return snippets, not full notes; use them to check whether a prior spec
-   already covers this. Pull full content only for a note you're about to
-   cite or extend, and batch it — `note_read_many`, never one `note_read`
-   per file. Scope `vault_list` to a directory or glob, not the whole
-   vault.
-2. **Start the note early.** Once the first cluster of decisions is
-   stable, `note_create` it — don't hold the draft in conversation until
-   the interview finishes.
-3. **Grow it section by section with `note_patch`, never `note_write`
-   again.** `note_write` re-sends the entire note on every edit, so its
-   cost grows with the note; `note_patch` costs only the size of the
-   change. Over a long interview that's the difference that matters.
-4. **Don't read back to verify.** Trust a `note_patch` result like you'd
-   trust a local file edit — a confirming `note_read` re-spends the whole
-   note in tokens for nothing new.
-5. **Link late, not speculatively.** Query `wikilinks` only at the point
-   you're adding a link, to confirm the target exists — not up front
-   against the whole graph.
-6. **Hand off with `open_in_obsidian`, not a paste.** The stakeholder opens
-   it in the app; don't re-emit the note's content into the conversation
-   just to show it.
+Specific to this skill: `note_create` the note as soon as the first
+cluster of decisions is stable — don't hold the draft in conversation
+until the interview finishes.
