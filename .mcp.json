@@ -9,7 +9,7 @@
         "OBSIDIAN_EMBEDDINGS": "true",
         "OBSIDIAN_EMBEDDING_PROVIDER": "local",
         "OBSIDIAN_TOOLS": "full",
-        "OBSIDIAN_EXCLUDE_PATHS": ".claude/**,AGENTS.md"
+        "OBSIDIAN_EXCLUDE_PATHS": ".claude/**,AGENTS.md,archive/**"
       }
     }
   }

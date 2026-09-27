@@ -7,7 +7,7 @@ description: Turn a rough idea into a developer-ready specification through an i
 
 This is the approach used to turn "a virtual machine host that holds
 ram-resident kvm guests running an llm code agent..." into a full,
-implementation-ready specification (see `docs/agent-vm-host-spec.md` in this
+implementation-ready specification (see `archive/agent-vm-host-spec.md` in this
 repo for the result). It generalizes to any "help me spec this out" request.
 
 ## Core loop

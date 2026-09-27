@@ -1,6 +1,6 @@
 # Agent VM Host — Build Checklist
 
-Tracks implementation of `docs/agent-vm-host-spec.md` via the staged plan in
+Tracks implementation of `archive/agent-vm-host-spec.md` via the staged plan in
 `docs/agent-vm-host-plan.md`. Work top to bottom, chunk by chunk, step by
 step — later steps assume earlier ones are merged and green.
 

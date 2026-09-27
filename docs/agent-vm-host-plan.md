@@ -1,6 +1,6 @@
 # Isolated LLM Code-Agent VM Host — Implementation Blueprint & Prompt Plan
 
-This document turns `docs/agent-vm-host-spec.md` into an executable, test-driven
+This document turns `archive/agent-vm-host-spec.md` into an executable, test-driven
 build plan. It has four parts:
 
 1. **Blueprint** — the end-to-end build order and why it's sequenced that way.
@@ -188,7 +188,7 @@ first where the prompt says so, then the implementation, then confirm green.
 #### A1
 
 ```text
-We're starting a new subsystem in this NixOS repo (see docs/agent-vm-host-spec.md
+We're starting a new subsystem in this NixOS repo (see archive/agent-vm-host-spec.md
 and docs/agent-vm-host-plan.md for full context) that builds an isolated
 Firecracker microVM host for running Claude Code agent sessions. This repo
 already uses "lon" (lon.nix/lon.lock) for pinned sources — follow that
@@ -291,7 +291,7 @@ load-time check needs root and defer full verification to chunk G's tests).
 
 ```text
 Building on agent-vm/ scaffolding (A1-A4). We need a minimal guest kernel for
-the microVMs described in docs/agent-vm-host-spec.md §3/§9/§15. Create
+the microVMs described in archive/agent-vm-host-spec.md §3/§9/§15. Create
 agent-vm/nix/guest-kernel.nix: a Nix derivation building a Linux kernel
 (pin a specific LTS version consistent with whatever nixpkgs revision `lon`
 already provides) with a config fragment enabling exactly: VIRTIO_BLK,
@@ -443,7 +443,7 @@ it reads back b"echo: hello\n".
 
 ```text
 Building on C2's SessionManager. Two things must be true per
-docs/agent-vm-host-spec.md §11 and §10: every byte on the stdio channel is
+archive/agent-vm-host-spec.md §11 and §10: every byte on the stdio channel is
 recorded to `terminal.jsonl` from the moment the session starts (not only
 while a client is attached), and `attach`/`detach` must not kill or disturb
 the underlying session.
