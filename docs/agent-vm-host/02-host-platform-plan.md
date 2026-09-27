@@ -17,24 +17,21 @@ Build order, each layer resting on the previous:
    a guest under an outer hypervisor.
 3. An exclusive cgroup v2 hierarchy, mounted and verified with no v1 fallback
    anywhere, since every later resource-isolation mechanism assumes it.
-4. A host memory posture for VM density (swap handling, KSM) — left as an
-   open gap per the spec, not guessed at here.
+4. A host memory posture for VM density (swap disabled, KSM disabled),
+   resolved per [[15-decisions-log]] and made an explicit, verified platform
+   guarantee rather than an implicit default.
 
 Finished state: a host that boots reproducibly onto the specified storage
 shape, exposes verified KVM access with an explicit outer-hypervisor
 dependency documented, mounts cgroup v2 exclusively with a boot-time guard,
-and has host memory tuning either resolved later or explicitly flagged
-pending — never silently assumed.
-
+and has swap and KSM explicitly disabled with a matching boot-time
+verification check — no platform-level guarantee left silently assumed.
 ## Chunks
 
 1. Base Host OS & Storage Foundation
 2. Nested Virtualization & KVM Access
 3. Exclusive cgroup v2 Enforcement
-4. Host Memory Posture for VM Density (open gap — no steps)
-
----
-
+4. Host Memory Posture for VM Density
 ## Chunk 1 — Base Host OS & Storage Foundation
 
 ### Step 1.1 — Base host system definition
@@ -189,20 +186,59 @@ check, so a single "is this host ready" pass covers both.
 
 ## Chunk 4 — Host Memory Posture for VM Density
 
-> [!warning] Open gap — no implementation step
-> Whether/how to disable or secure swap, and whether to disable KSM
-> (kernel same-page merging), for a host that runs multiple untrusted VM
-> guests concurrently is **not decided** in the spec. The host's storage
-> foundation (chunk 1) already establishes an ephemeral, zram-backed root
-> with no swap partition defined, but that is a storage-layout fact, not a
-> memory-security decision — see the open question in
-> [[15-decisions-log]]. No codegen prompt is generated for this chunk;
-> guessing a swap/KSM policy risks baking in a security-relevant default
-> the spec explicitly left open. Revisit once this decision is resolved,
-> then add steps here following the same pattern as chunks 1–3.
+### Step 4.1 — Swap-disabled, KSM-disabled memory posture guard
 
+Builds on chunk 1's storage layout (ephemeral zram root, no swap
+partition) and chunk 3's verification-guard pattern.
+
+```text
+You are extending a host operating system configuration that already boots
+with a defined storage layout (an ephemeral zram-backed root, no swap
+partition) and already has a boot-time verification-guard pattern
+established for other platform guarantees (KVM availability, cgroup
+v2-only).
+
+Specification facts for this task, resolved in [[15-decisions-log|the host
+memory swap/KSM decision]]: this host must never activate swap (no
+anonymous-memory backing store on persistent disk) and must never enable
+kernel same-page merging (KSM), because this host runs multiple concurrent,
+mutually-untrusted VM guests — the same "tenants sharing a physical host"
+threat model already used to justify disabling SMT elsewhere in this
+subsystem ([[12-production-hardening]]). Swap risks writing sensitive guest
+memory contents to persistent storage; KSM risks a cross-tenant
+page-deduplication side channel letting one guest infer another's memory
+access patterns.
+
+Task: make both guarantees explicit, host-config-pinned facts, not
+implicit defaults that could silently drift if this configuration changes
+later: ensure no swap device is ever activated (confirm and, if needed,
+make explicit the existing configuration that keeps swap off), and ensure
+KSM stays disabled (confirm and, if needed, make explicit that no
+KSM-enabling configuration is present). Add a boot-time verification
+check, structured the same way as the existing KVM-availability and
+cgroup v2-only checks from chunks 2 and 3: confirms no swap device is
+active (nothing present under the running system's swap accounting) and
+confirms KSM's run state is off, failing loudly and refusing to report
+healthy if either condition is violated.
+
+Wire this check into the same host pre-flight diagnostics story as the
+KVM-availability and cgroup v2-only checks, so a single "is this host
+ready" pass covers all three, and make its pass/fail state part of
+whatever this subsystem's `doctor` CLI reports
+([[12-production-hardening|the `doctor` subcommand]], not yet planned)
+once that component exists.
+
+Verify: boot the host and confirm the check reports both conditions
+healthy; as a negative-path proof, temporarily force one condition false
+in a test configuration (activate a throwaway swap device, or enable KSM)
+and confirm the check now fails loudly with a clear, distinct message for
+each case, rather than passing silently.
+```
 ## Related
 
 - [[02-host-platform]] — the spec note this plan derives from.
 - [[15-decisions-log]] — cgroup v2-only resolved decision (folded into
-  chunk 3); host memory swap/KSM open question (chunk 4 open gap).
+  chunk 3); host memory swap/KSM decision (folded into chunk 4).
+- [[12-production-hardening]] — the SMT-disable precedent this chunk's
+  KSM rationale mirrors, and the future `doctor` subcommand this chunk's
+  check should report through.

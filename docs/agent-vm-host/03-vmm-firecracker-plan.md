@@ -112,7 +112,7 @@ Chunk 1, second step. Builds directly on Step 1's kernel artifact — this is
 the first step that actually launches a Firecracker microVM.
 
 Launching any Firecracker microVM needs a working, host-verified `/dev/kvm`;
-that guarantee is [[02-host-platform-plan#Step 3 — /dev/kvm / nested-virt runtime guarantee]],
+that guarantee is [[02-host-platform-plan#Step 2.2 — Boot-time KVM availability verification]],
 not re-derived here.
 
 ```text
@@ -161,7 +161,6 @@ point at which this component produces genuinely working, end-to-end
 functionality: a real kernel booting through a real launcher into a real
 (if placeholder) pid1, with its boot output durably captured on the host.
 ```
-
 ## Step 3 — Full block-device model: three virtio-block devices
 
 Chunk 2, single step. Builds directly on Step 2's launcher and placeholder
