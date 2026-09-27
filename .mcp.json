@@ -3,12 +3,13 @@
     "obsidian": {
       "type": "stdio",
       "command": "obsidian-mcp",
-      "args": ["/home/bert-proesmans/a-box/docs"],
+      "args": ["${CLAUDE_PROJECT_DIR:-.}"],
       "alwaysLoad": false,
       "env": {
         "OBSIDIAN_EMBEDDINGS": "true",
         "OBSIDIAN_EMBEDDING_PROVIDER": "local",
-        "OBSIDIAN_TOOLS": "full"
+        "OBSIDIAN_TOOLS": "full",
+        "OBSIDIAN_EXCLUDE_PATHS": ".claude/**,AGENTS.md"
       }
     }
   }
