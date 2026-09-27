@@ -34,11 +34,11 @@ Isolated LLM code-agent VM host: one Firecracker microVM per Claude Code session
 - [[12-production-hardening|Production Hardening & Resource Control]] — hugepages, jailer+systemd, KVM/host tuning, `doctor` subcommand.
 
 ## Reliability & Verification
+## Reliability & Verification
 
 - [[13-error-handling-failure-modes|Error Handling & Failure Modes]] — launch atomicity, stop cascades, fatal vs. best-effort failures.
 - [[14-testing-strategy|Testing Strategy]] — test markers, unit/integration test layering.
-- [[15-decisions-log|Decisions Log & Remaining Open Items]] — 17 resolved decisions, 4 still-open items, spanning nearly every component above.
-
+- [[15-decisions-log|Decisions Log & Remaining Open Items]] — 21 resolved decisions, 1 still-open item, spanning nearly every component above.
 ## Querying this collection
 
 - By tag: `#open-question` (unresolved risks/decisions scattered across network egress, workspace delivery, orchestration, production hardening, error handling, testing, and the decisions log), `#decision` (resolved items, mostly in the decisions log), `#implementation-note` (verify-before-build callouts).
