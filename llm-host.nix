@@ -439,6 +439,14 @@ in
     ];
   };
 
+  # agent-vm-host chunk 4 (docs/agent-vm-host/02-host-platform-todo.md):
+  # boots the preflight check in a VM, proving both the healthy path and
+  # the distinct-failure-per-condition negative path.
+  platformMemoryPostureTest = import ./agent-vm-host-platform-test.nix {
+    inherit lib;
+    hostPkgs = self.system.pkgs;
+  };
+
   installer =
     (nixosSystem {
       specialArgs = { inherit self sources; };
