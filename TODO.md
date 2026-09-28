@@ -4,9 +4,9 @@ Chunk-level progress across the 13 split-spec plans under `docs/agent-vm-host/`.
 
 ## [[02-host-platform-todo]]
 
-- [ ] [[02-host-platform-todo#Chunk 1 — Base Host OS & Storage Foundation]]
-- [ ] [[02-host-platform-todo#Chunk 2 — Nested Virtualization & KVM Access]]
-- [ ] [[02-host-platform-todo#Chunk 3 — Exclusive cgroup v2 Enforcement]]
+- [x] [[02-host-platform-todo#Chunk 1 — Base Host OS & Storage Foundation]]
+- [x] [[02-host-platform-todo#Chunk 2 — Nested Virtualization & KVM Access]]
+- [x] [[02-host-platform-todo#Chunk 3 — Exclusive cgroup v2 Enforcement]]
 - [ ] [[02-host-platform-todo#Chunk 4 — Host Memory Posture for VM Density]]
 
 ## [[03-vmm-firecracker-todo]]

@@ -76,6 +76,7 @@ in
             # TODO; Remove on completion of hardware config
             (modulesPath + "/installer/scan/not-detected.nix")
             ./systemd-dnssd.nix
+            ./agent-vm-host-platform.nix
           ];
 
           system.requiredKernelConfig = [
@@ -288,6 +289,11 @@ in
           boot.kernelModules = [
             # Enables (nested) virtualization through hardware acceleration.
             # There is no harm in having both modules loaded at the same time, also no real overhead.
+            # Necessary but not sufficient: this host runs as a guest itself
+            # (virtualisation.hypervGuest.enable below) - /dev/kvm only works
+            # if the outer hypervisor also has nested virt enabled for this
+            # guest. See ./agent-vm-host-platform.nix for the boot-time
+            # verification and dedicated vm-launcher device access.
             "kvm-amd"
             "kvm-intel"
           ];
