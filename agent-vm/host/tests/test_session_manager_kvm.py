@@ -75,7 +75,7 @@ def test_attach_client_round_trips_through_guest(
                 client.connect(str(attach_sock_path))
                 try:
                     client.sendall(b"hello\n")
-                    expected = b"echo: hello\n"
+                    expected = b"hello\n"
                     assert _recv_exactly(client, len(expected)) == expected
                 finally:
                     client.close()
@@ -112,7 +112,7 @@ def test_two_attach_clients_fan_out_and_disconnect_isolation(
                 time.sleep(0.2)
 
                 client_a.sendall(b"hello\n")
-                expected = b"echo: hello\n"
+                expected = b"hello\n"
                 assert _recv_exactly(client_a, len(expected)) == expected
                 assert _recv_exactly(client_b, len(expected)) == expected
 
@@ -120,7 +120,7 @@ def test_two_attach_clients_fan_out_and_disconnect_isolation(
                 time.sleep(0.2)
 
                 client_b.sendall(b"again\n")
-                expected2 = b"echo: again\n"
+                expected2 = b"again\n"
                 assert _recv_exactly(client_b, len(expected2)) == expected2
                 client_b.close()
             finally:

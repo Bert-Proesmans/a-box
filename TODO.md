@@ -2,11 +2,6 @@
 
 Chunk-level progress across the 13 split-spec plans under `docs/agent-vm-host/`. Drill into a chunk's steps via its link. Supersedes the old monolithic-plan tracker, now at [[archive/todo]].
 
-## Known gaps (need a decision, not just more work)
-
-- **Echo stub isn't byte-exact.** `03-vmm-firecracker-todo` Step 4 and `04-guest-pid1-init-todo` Step 2.1 both require their placeholder echo to return bytes unchanged. The existing stub agent (`agent-vm/guest/echo-agent`) prefixes every line with `echo: ` instead. Either accept the prefix as a deliberate deviation, or make the stub byte-exact before checking those steps off.
-- **Console log truncates on relaunch.** `FirecrackerVM.start()` (`agent-vm/host/src/agentvm/firecracker.py`) opens `console_log` with `.open("wb")`, which truncates any prior content. `03-vmm-firecracker-todo` Step 6 requires a failed/relaunched boot's log to persist — currently it doesn't, and there's no negative-path test catching this.
-
 ## [[02-host-platform-todo]]
 
 - [ ] [[02-host-platform-todo#Chunk 1 — Base Host OS & Storage Foundation]]
@@ -18,7 +13,7 @@ Chunk-level progress across the 13 split-spec plans under `docs/agent-vm-host/`.
 
 - [x] [[03-vmm-firecracker-todo#Chunk 1 — Guest kernel & first boot proof]]
 - [ ] [[03-vmm-firecracker-todo#Chunk 2 — Full workspace block-device model]]
-- [ ] [[03-vmm-firecracker-todo#Chunk 3 — vsock control-channel transport]]
+- [x] [[03-vmm-firecracker-todo#Chunk 3 — vsock control-channel transport]]
 - [ ] [[03-vmm-firecracker-todo#Chunk 4 — Device-model completeness & console-policy guarantees]]
 
 ## [[04-guest-pid1-init-todo]]

@@ -128,7 +128,10 @@ class FirecrackerVM:
             self.vsock_uds_path.unlink()
 
         self.console_log.parent.mkdir(parents=True, exist_ok=True)
-        self._console_fh = self.console_log.open("wb")
+        # Append, not truncate: a relaunch reusing the same log path (e.g.
+        # a retried session) must not discard a prior failed boot's
+        # captured output - it may be what a failure diagnosis needs.
+        self._console_fh = self.console_log.open("ab")
 
         self._process = subprocess.Popen(
             [self.firecracker_binary, "--api-sock", str(self.api_socket)],

@@ -68,6 +68,28 @@ def test_start_cleans_up_process_and_console_log_on_put_failure(tmp_path: Path) 
     assert vm._console_fh is None
 
 
+def test_console_log_persists_across_relaunch(tmp_path: Path) -> None:
+    # A relaunch reusing the same console_log path (e.g. a retried
+    # session) must not discard or truncate a prior failed boot's
+    # captured output - it's evidence a failure diagnosis may need.
+    fake_binary = _write_fake_binary(
+        tmp_path / "fake-firecracker",
+        script='echo "boot attempt output"\nexit 1\n',
+    )
+    vm = _make_vm(tmp_path, firecracker_binary=fake_binary)
+
+    with pytest.raises(FirecrackerProcessExited):
+        vm.start()
+    first_log = vm.console_log.read_text()
+    assert "boot attempt output" in first_log
+
+    with pytest.raises(FirecrackerProcessExited):
+        vm.start()
+    second_log = vm.console_log.read_text()
+    assert second_log.startswith(first_log)
+    assert second_log.count("boot attempt output") == 2
+
+
 def test_wait_for_api_socket_fails_fast_when_process_exits(tmp_path: Path) -> None:
     fake_binary = _write_fake_binary(
         tmp_path / "fake-firecracker",

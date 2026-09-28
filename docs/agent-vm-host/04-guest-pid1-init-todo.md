@@ -31,13 +31,13 @@ A step's top-level box is a summary — check it only once every nested box unde
 
 ## Chunk 2 — Guest vsock Channels
 
-- [ ] Step 2.1 — Interactive stdio vsock connection — [[04-guest-pid1-init-plan#Step 2.1 — Interactive stdio vsock connection]]
+- [x] Step 2.1 — Interactive stdio vsock connection — [[04-guest-pid1-init-plan#Step 2.1 — Interactive stdio vsock connection]]
   - [x] Opens vsock connection to host on one fixed, well-known port dedicated to interactive stdio, using the `nix` crate's AF_VSOCK support
   - [x] Holds the connection open (not closed) for a later step to duplicate onto the exec'd agent's stdin/stdout
-  - [ ] Temporary echo behavior on this connection for this step's own verification (left in place until replaced later)
-  - [ ] Verify: launch via existing VMM launcher; from host, connect to instance's dedicated vsock socket path, address the stdio port, send bytes, confirm echoed back unchanged
+  - [x] Temporary echo behavior on this connection for this step's own verification (left in place until replaced later)
+  - [x] Verify: launch via existing VMM launcher; from host, connect to instance's dedicated vsock socket path, address the stdio port, send bytes, confirm echoed back unchanged
   - Depends on: [[03-vmm-firecracker-plan#Step 4 — vsock control-channel transport]]
-  - Existing code already spawns the real chunk-C1 `echo_agent` child (stdio dup'd via `spawn.rs`) instead of an inline temporary echo — it stands in functionally, but `echo_agent` prefixes every line with `echo: `, so sent bytes don't come back unchanged; either accept that prefix as the deviation or make the stub byte-exact before checking the last two boxes
+  - `echo_agent` (spawned via `spawn.rs`, stdio dup'd) no longer prefixes lines with `echo: ` — it copies stdin to stdout byte-for-byte, so sent bytes come back unchanged. Verified against a real KVM boot in `test_session_manager_kvm.py`.
 - [ ] Step 2.2 — Guest-side proxy-shim channel — [[04-guest-pid1-init-plan#Step 2.2 — Guest-side proxy-shim channel]]
   - [ ] After stdio connection established, starts the guest-side proxy-shim program as a child process (direct binary exec, never through a shell), bound to a loopback TCP port translating to a second fixed vsock port dedicated to proxy traffic
   - [ ] Does not wait for or supervise this child process afterward

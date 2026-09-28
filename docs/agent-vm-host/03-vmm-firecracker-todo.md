@@ -35,12 +35,12 @@ A step's top-level box is a summary — check it only once every nested box unde
 
 ## Chunk 3 — vsock control-channel transport
 
-- [ ] Step 4 — vsock control-channel transport — [[03-vmm-firecracker-plan#Step 4 — vsock control-channel transport]]
+- [x] Step 4 — vsock control-channel transport — [[03-vmm-firecracker-plan#Step 4 — vsock control-channel transport]]
   - [x] Launcher extended to attach a virtio-vsock device to the microVM configuration
   - [x] Launcher's configuration surface can receive/generate, per launch, a host-side socket path dedicated to that one instance (e.g. derived from a caller-supplied per-launch identifier) plus a guest context identifier — no shared cross-VM lookup mechanism
-  - [ ] Placeholder init extended: opens a vsock connection on one fixed port and runs a trivial echo loop
-  - [ ] Verify: launch instance, connect from host to its dedicated vsock socket path, send bytes, confirm placeholder echoes them back unchanged
-  - Existing guest code already opens this connection and hands it to a real spawned agent (`echo_agent`, chunk C1 of the old plan) rather than running a trivial inline echo, and that agent prefixes every line with `echo: ` — bytes are not echoed back unchanged, so this step's literal verify condition isn't met yet (see 04's Step 2.1 caveat for the same root cause)
+  - [x] Placeholder init extended: opens a vsock connection on one fixed port and runs a trivial echo loop
+  - [x] Verify: launch instance, connect from host to its dedicated vsock socket path, send bytes, confirm placeholder echoes them back unchanged
+  - `echo_agent` no longer prefixes lines with `echo: ` — it copies bytes read from stdin straight to stdout, unbuffered by line, so sent bytes come back unchanged. Verified against a real KVM boot in `test_session_manager_kvm.py`.
 
 ## Chunk 4 — Device-model completeness & console-policy guarantees
 
@@ -53,10 +53,10 @@ A step's top-level box is a summary — check it only once every nested box unde
 - [ ] Step 6 — Serial-console policy: boot-log-only, never interactive — [[03-vmm-firecracker-plan#Step 6 — Serial-console policy: boot-log-only, never interactive]]
   - [x] Audit launcher's public interface; confirm or remove any function/flag/code path allowing interactive attach to the serial console — only vsock supports interactive use
   - [x] Serial console wiring is write-only-to-a-log-file, no read/attach side exposed to callers
-  - [ ] Captured boot-log file for a given launch is retained after the guest stops or fails to boot — not discarded, truncated, or overwritten on a later launch
+  - [x] Captured boot-log file for a given launch is retained after the guest stops or fails to boot — not discarded, truncated, or overwritten on a later launch
   - [ ] Verify (a): confirm no way exists anywhere in the launcher's interface to interactively attach to the serial console
-  - [ ] Verify (b): deliberately cause a boot to fail (e.g. bad kernel/init combination); confirm a readable, non-empty captured log file still exists afterward
-  - `FirecrackerVM.start()` opens `console_log` with `.open("wb")`, which truncates on every call — a retried/relaunched instance reusing the same log path loses prior boot evidence; no negative-path test (deliberately-failed boot + log-still-present) exists yet either
+  - [x] Verify (b): deliberately cause a boot to fail (e.g. bad kernel/init combination); confirm a readable, non-empty captured log file still exists afterward
+  - `FirecrackerVM.start()` now opens `console_log` with `.open("ab")` (append, not truncate), so a retried/relaunched instance reusing the same log path keeps prior boot evidence. Covered by `test_console_log_persists_across_relaunch` in `test_firecracker.py`.
 
 ## Related
 
