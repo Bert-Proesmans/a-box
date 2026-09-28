@@ -37,3 +37,8 @@ Use each tool for what it's built for - search is separate from full-content ret
 - **Don't read back to verify.** Trust a `note_patch`/`note_create` result the way you'd trust a local file edit - the tool's response already confirms the change.
 - **Link late.** Query `wikilinks` only when actually adding a link, to confirm the target exists.
 - **Hand off, don't paste.** Use `open_in_obsidian` so the user opens the real note in the app, instead of re-emitting note content into the conversation.
+
+## Repo structure docs
+
+- Keep repo structure information in sync as the tree changes - stale layout docs are worse than none.
+- A `README.md`, where one exists, is the authoritative structure doc for its own directory level and subfolders. Update it, not some other note, when that subtree's layout changes. See `agent-vm/README.md`'s "Source layout" section for the expected shape.

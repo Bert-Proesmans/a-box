@@ -1,9 +1,55 @@
 # agent-vm
-
 Isolated Firecracker microVM host for running Claude Code agent sessions.
-See `archive/agent-vm-host-spec.md` for the design and `docs/agent-vm-host-plan.md`
-for the build plan and step-by-step progress (`todo.md` tracks checklist
-status). Enter the build environment with `nix-shell agent-vm/nix -A devshell`.
+Design/plan/checklist notes now live split per-component under
+`docs/agent-vm-host/` (`archive/agent-vm-host-spec.md` and `archive/todo.md`
+are the superseded originals); root `TODO.md` rolls up chunk-level progress
+across all of them. Enter the build environment with `nix-shell agent-vm/nix
+-A devshell`.
+
+## Source layout
+
+- `bpf/` - C/libbpf CO-RE scaffold: `progs/noop.bpf.c` (BPF program) +
+  `loader/main.c` (userspace loader), built by `nix/bpf.nix`. Real
+  tracepoint programs land in chunk G (see
+  [[07-bpf-monitoring-todo|07-bpf-monitoring]]).
+- `guest/` - Rust cargo workspace holding the two binaries that run inside
+  the microVM:
+  - `pid1-init/` - the guest's PID 1: mount setup (`mount.rs`), vsock
+    channels (`vsock.rs`), port constants (`ports.rs`), process spawn
+    (`spawn.rs`). Built statically (musl, `pkgsStatic`) by
+    `nix/guest-init.nix`.
+  - `echo-agent/` - stub agent binary standing in for the real Claude Code
+    agent process until later chunks replace it.
+- `host/` - the `agentvm` Python package (host-side orchestration CLI),
+  packaged by `nix/host-package.nix`:
+  - `src/agentvm/cli.py` - click entrypoint (currently a stub).
+  - `src/agentvm/firecracker.py` - `FirecrackerVM` wrapper.
+  - `src/agentvm/session_manager.py` - `SessionManager`/`TerminalRecorder`/
+    `AttachHub`: holds a session's guest vsock stdio connection for its
+    whole lifetime, tees bytes to `terminal.jsonl`, fans out to `attach`
+    clients over a local Unix socket. One thread-based instance per
+    session, no shared event loop (see file's own docstring for why).
+  - `src/agentvm/vsock_bridge.py` - `connect_guest_port` helper.
+  - `tests/` - pytest suite; `conftest.py` builds `guest-kernel`/
+    `device1-v0` via `nix-build` as session-scoped fixtures, and defines
+    `needs_kvm`/`needs_root`/`needs_bpf` markers (auto-skipped when
+    unavailable, e.g. no usable `/dev/kvm`) so `pytest agent-vm/host` stays
+    runnable without special privileges.
+- `nix/` - all Nix build definitions, collected in `default.nix`:
+  `devshell.nix` (dev shell), `host-package.nix` (the `agentvm` CLI
+  package), `bpf.nix` (bpf scaffold), `guest-init.nix` (static
+  `pid1-init`), `guest-kernel.nix` (guest kernel image) +
+  `guest-kernel-check.nix` (build-time check: real bootable x86 ELF),
+  `device1-v0.nix` (guest rootfs squashfs image) +
+  `device1-v0-check.nix` (build-time check: exact expected file listing).
+  The `-check.nix` files are Nix build-time derivation checks, distinct
+  from the boot-time host checks below.
+
+Host-OS-level configuration this subsystem depends on (KVM kernel modules,
+cgroup v2, memory posture, the dedicated `vm-launcher` user, and the
+`agent-vm-host-preflight` boot-time check) lives outside this directory, in
+the repo-root `llm-host.nix` and `agent-vm-host-platform.nix` - see
+[[02-host-platform]].
 
 ## External references
 
