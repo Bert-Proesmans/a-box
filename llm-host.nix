@@ -150,6 +150,17 @@ in
               };
             };
           };
+          boot.kernelParams = [
+            "zswap.enabled=0" # Using ZRAM
+            "psi=1" # Send memory stats to userspace
+            "lru_gen=enabled"
+          ];
+          boot.kernel.sysctl = {
+            "vm.min_free_kbytes" = 524288; # 512 MiB
+            "vm.vfs_cache_pressure" = 110; # Prefer reclaiming I/O cache
+            "vm.extfrag_threshold" = 200; # Defragment often
+          };
+
           # DO NOT setup another ZRAM device!
           zramSwap.enable = lib.mkForce false;
           services.zram-generator.enable = lib.mkForce false;
@@ -164,6 +175,7 @@ in
           };
           fileSystems."/nix".neededForBoot = true;
           fileSystems."/persistent".neededForBoot = true;
+          boot.tmp.useTmpfs = false;
 
           # disko.devices.nodev = {
           #   "/" = {
@@ -384,6 +396,7 @@ in
             pkgs.yazi
             pkgs.bat
             (pkgs.callPackage ./obsidian-mcp.nix { inherit sources; })
+            pkgs.omp
           ];
 
           services.btrfs.autoScrub = {
@@ -399,6 +412,18 @@ in
               # mDNS responder and resolver
               MulticastDNS = true;
               Domains = [ "~." ];
+            };
+          };
+
+          systemd.oomd = {
+            enable = true;
+            # NOTE; These high-level slices are set to 80% pressure, since they potentially hold the entire system.
+            enableRootSlice = true;
+            enableSystemSlice = true;
+            enableUserSlices = true;
+            settings.OOM = {
+              DefaultMemoryPressureLimit = "60%"; # Systemd default
+              DefaultMemoryPressureDurationSec = "20s"; # Fedora default
             };
           };
 
