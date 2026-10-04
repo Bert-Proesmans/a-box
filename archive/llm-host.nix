@@ -288,6 +288,7 @@ in
                 directories = [
                   # { directory = ".ssh"; mode = "0700"; }
                   ".config"
+                  ".local"
                 ];
                 files = [ ];
               };
@@ -372,31 +373,44 @@ in
             };
           };
 
+          environment.sessionVariables = {
+            XDG_CACHE_HOME = "$HOME/.cache";
+            XDG_CONFIG_HOME = "$HOME/.config";
+            XDG_DATA_HOME = "$HOME/.local/share";
+            XDG_STATE_HOME = "$HOME/.local/state";
+          };
+
           environment.systemPackages = [
             pkgs.git
             (
               let
                 claude-code = pkgs.latest.claude-code;
+                omp = pkgs.latest.omp;
               in
               pkgs.symlinkJoin {
-                name = "${claude-code.name}-wrapped";
-                paths = [ claude-code ];
+                name = "agents-wrapped";
+                paths = [
+                  claude-code
+                  omp
+                ];
                 nativeBuildInputs = [ pkgs.makeShellWrapper ];
                 postBuild = ''
                   # WARN; '--set' fails to do the expected thing, expanding $HOME at command invocation, because
                   # it's being resolved at build time (to /homeless-shelter).
                   # The argument RUN with an export will do exactly what we expect, at runtime.
                   wrapProgram $out/bin/claude \
-                    --run 'export CLAUDE_CONFIG_DIR="$HOME/.config/claude"' \
+                    --run 'export CLAUDE_CONFIG_DIR="$XDG_CONFIG_HOME/claude"' \
                     --set-default CLAUDE_CODE_DISABLE_AUTO_MEMORY 1 \
                     --set-default CLAUDE_CODE_ENABLE_TASKS 0
+
+                  wrapProgram $out/bin/omp \
+                    --run 'export PI_CONFIG_DIR="$XDG_DATA_HOME/omp"'
                 '';
               }
             )
             pkgs.yazi
             pkgs.bat
             (pkgs.callPackage ./obsidian-mcp.nix { inherit sources; })
-            pkgs.omp
             pkgs.nil # Nix LSP
             pkgs.clang-tools # clangd (LSP)
             pkgs.rust-analyzer # Rust LSP
