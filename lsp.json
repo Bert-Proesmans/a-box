@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "nil": {
+      "rootMarkers": ["flake.nix", "default.nix", "shell.nix", ".git"]
+    },
+    "clangd": {
+      "rootMarkers": ["compile_commands.json", "CMakeLists.txt", ".clangd", ".clang-format", "Makefile", ".git"]
+    },
+    "rust-analyzer": {
+      "rootMarkers": ["Cargo.toml", "rust-analyzer.toml", ".git"]
+    }
+  }
+}
