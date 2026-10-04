@@ -399,7 +399,8 @@ in
                   --set-default CLAUDE_CODE_ENABLE_TASKS 0
 
 
-                # OMP automatically selects the XDG directories if set in environment
+                # Either I don't know how to hold it, or OMP doesn't properly comply with XDG..
+                # It always needs an '.omp' folder in the launch workspace.
                 # wrapProgram $out/bin/omp \
                 #   --run 'export PI_CONFIG_DIR="$XDG_DATA_HOME/omp"'
               '';
