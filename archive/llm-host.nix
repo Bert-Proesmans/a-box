@@ -397,6 +397,9 @@ in
             pkgs.bat
             (pkgs.callPackage ./obsidian-mcp.nix { inherit sources; })
             pkgs.omp
+            pkgs.nil # Nix LSP
+            pkgs.clang-tools # clangd (LSP)
+            pkgs.rust-analyzer # Rust LSP
           ];
 
           services.btrfs.autoScrub = {
