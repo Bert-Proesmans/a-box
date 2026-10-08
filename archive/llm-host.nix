@@ -411,6 +411,7 @@ in
             pkgs.nil # Nix LSP
             pkgs.clang-tools # clangd (LSP)
             pkgs.rust-analyzer # Rust LSP
+            (pkgs.python3.withPackages (p: [ p.virtualenv ]))
           ];
 
           services.btrfs.autoScrub = {
