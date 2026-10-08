@@ -5,6 +5,7 @@
   sources ? (import ./lon.nix),
 }:
 let
+  lock = builtins.fromJSON (builtins.readFile ./lon.lock);
 
   # Collection of helper methods.
   # SEEALSO; https://noogle.dev
@@ -35,12 +36,13 @@ in
   outPath = ./.;
 
   system = nixosSystem {
-    specialArgs = { inherit self sources; };
+    specialArgs = { inherit self sources lock; };
     modules = [
       (
         {
           modulesPath,
           sources,
+          lock,
           lib,
           utils,
           pkgs,
@@ -321,6 +323,11 @@ in
           ];
           nix.settings.connect-timeout = 5;
           nix.settings.log-lines = 25;
+          nix.registry.nixpkgs.to = {
+            type = "path";
+            path = sources.nixos;
+            narHash = lock.sources.nixos.hash;
+          };
 
           users.mutableUsers = false;
           users.users.bert-proesmans = {
