@@ -193,12 +193,6 @@ in
 
             content.type = "gpt";
 
-            content.partitions.boot = {
-              name = "boot";
-              size = "1M";
-              type = "EF02";
-            };
-
             content.partitions.esp = {
               name = "ESP";
               size = "1G";
@@ -310,9 +304,7 @@ in
             "kvm-amd"
             "kvm-intel"
           ];
-          boot.loader.grub.enable = true;
-          boot.loader.grub.efiSupport = true;
-          # boot.loader.systemd-boot.enable = true;
+          boot.loader.systemd-boot.enable = true;
           boot.loader.efi.canTouchEfiVariables = false;
 
           networking.hostName = "llm-host";
