@@ -310,7 +310,9 @@ in
             "kvm-amd"
             "kvm-intel"
           ];
-          boot.loader.systemd-boot.enable = true;
+          boot.loader.grub.enable = true;
+          boot.loader.grub.efiSupport = true;
+          # boot.loader.systemd-boot.enable = true;
           boot.loader.efi.canTouchEfiVariables = false;
 
           networking.hostName = "llm-host";
