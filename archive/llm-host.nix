@@ -398,11 +398,11 @@ in
                   --set-default CLAUDE_CODE_DISABLE_AUTO_MEMORY 1 \
                   --set-default CLAUDE_CODE_ENABLE_TASKS 0
 
-
-                # Either I don't know how to hold it, or OMP doesn't properly comply with XDG..
-                # It always needs an '.omp' folder in the launch workspace.
-                # wrapProgram $out/bin/omp \
-                #   --run 'export PI_CONFIG_DIR="$XDG_DATA_HOME/omp"'
+                # NOTE; $XDG_CONFIG_HOME ~= ~/.config
+                # WARN; PI_CONFIG_DIR is used in path construction _relative_ to the home directory!
+                # default: '.omp' => stored underneath XDG_CONFIG_HOME: '.config/omp'
+                wrapProgram $out/bin/omp \
+                  --set-default PI_CONFIG_DIR '.config/omp'
               '';
             })
             pkgs.yazi
