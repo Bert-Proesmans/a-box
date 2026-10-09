@@ -17,6 +17,13 @@ Applies repo-wide.
 - Prefer stable/public APIs over internal file paths (`pkgs.linuxManualConfig`, not `pkgs.path + "/pkgs/os-specific/..."`).
 - If a fix works but is more convoluted than it needs to be, say so and simplify - don't defend the first working version.
 - Don't read `archive/`. It holds expired thoughts and failed experiments; it clutters context. Derive authoritative information from code files instead.
+- Implementation and research tasks may go to subagents on the `sonnet-5.5` model.
+
+## Testing
+
+- Tests run inside the Nix sandbox only (`nix-build -A tests.<name>`), never through a hand-launched driver or environment variables. Every setting a test needs lives in the test's Nix code.
+- This host runs nested virtualisation (KVM in Hyper-V); TSC-deadline timers never fire. Put the workaround in the test's `defaults`: `virtualisation.qemu.options = [ "-cpu max,-kvmclock" ];` and `boot.kernelParams = [ "lapic=notscdeadline" ];`.
+- `boot.kernelParams` only reaches direct-boot kernels. Kernels booted from the ESP need `lapic=notscdeadline` in their own command line.
 
 ## Git
 
