@@ -1,0 +1,4 @@
+# Git ignore rules: excludes paths starting with `result` and `.sec` files directly under `/keys/`.
+
+result*
+/keys/*.sec
