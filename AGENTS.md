@@ -19,6 +19,13 @@ Applies repo-wide.
 - Don't read `archive/`. It holds expired thoughts and failed experiments; it clutters context. Derive authoritative information from code files instead.
 - Implementation and research tasks may go to subagents on the `sonnet-5.5` model.
 
+## Documentation
+
+- Documentation is descriptive only. Sources of truth: text the user agreed to verbatim, and code. Write nothing knowledgeable beyond them.
+- Every code file starts with a 2-3 sentence comment describing its contents. A subagent with clean context reads the file and writes it.
+- Each folder may have a README.md: a lookup table (repo layout) summarizing the file descriptions.
+- Other README content may be suggested; content not derived from the sources of truth needs user approval.
+
 ## Testing
 
 - Tests run inside the Nix sandbox only (`nix-build -A tests.<name>`), never through a hand-launched driver or environment variables. Every setting a test needs lives in the test's Nix code.
