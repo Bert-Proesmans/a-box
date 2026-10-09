@@ -154,13 +154,16 @@ in
           };
           boot.kernelParams = [
             "zswap.enabled=0" # Using ZRAM
-            "psi=1" # Send memory stats to userspace
-            "lru_gen=enabled"
+            "psi=1" # Send memory stats to userspace, used by systemd.oomd
           ];
-          boot.kernel.sysctl = {
-            "vm.min_free_kbytes" = 524288; # 512 MiB
-            "vm.vfs_cache_pressure" = 110; # Prefer reclaiming I/O cache
-            "vm.extfrag_threshold" = 200; # Defragment often
+          boot.kernel.sysctl = { };
+          boot.kernel.sysfs = {
+            kernel.mm.lru_gen = {
+              enabled = "y";
+              # If the kernel sees pages faulted back in within X milliseconds (aka thrashing), it will start
+              # OOM killing instead!
+              min_ttl_ms = "1000";
+            };
           };
 
           # DO NOT setup another ZRAM device!
@@ -317,12 +320,16 @@ in
             wheelNeedsPassword = true;
           };
 
-          nix.settings.experimental-features = [
-            "nix-command"
-            "flakes"
-          ];
-          nix.settings.connect-timeout = 5;
-          nix.settings.log-lines = 25;
+          nix.settings = {
+            max-jobs = 2;
+            cores = 2;
+            connect-timeout = 5;
+            log-lines = 25;
+            experimental-features = [
+              "nix-command"
+              "flakes"
+            ];
+          };
           nix.registry.nixpkgs.to = {
             type = "path";
             path = sources.nixos;
@@ -441,6 +448,19 @@ in
               DefaultMemoryPressureLimit = "60%"; # Systemd default
               DefaultMemoryPressureDurationSec = "20s"; # Fedora default
             };
+          };
+          # Keep cgroup accounting on so oomd and memory controls have full visibility.
+          systemd.settings.Manager = {
+            DefaultCPUAccounting = true;
+            DefaultIOAccounting = true;
+            DefaultMemoryAccounting = true;
+            DefaultTasksAccounting = true;
+          };
+          systemd.services.systemd-logind.serviceConfig.MemoryLow = "64M";
+          systemd.services.sshd.serviceConfig.MemoryLow = "64M";
+          systemd.services.nix-daemon.serviceConfig = {
+            MemoryHigh = "70%";
+            MemoryMax = "90%";
           };
 
           systemd.dnssd.services = {
