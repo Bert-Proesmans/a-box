@@ -16,6 +16,7 @@ Applies repo-wide.
 - Before writing off an approach as impossible, check one level deeper. "Not exposed at this layer" isn't "not possible" - a nixpkgs override can hide the seam one call down (`pkgs.buildLinux` vs `pkgs.linuxManualConfig`).
 - Prefer stable/public APIs over internal file paths (`pkgs.linuxManualConfig`, not `pkgs.path + "/pkgs/os-specific/..."`).
 - If a fix works but is more convoluted than it needs to be, say so and simplify - don't defend the first working version.
+- Don't read `archive/`. It holds expired thoughts and failed experiments; it clutters context. Derive authoritative information from code files instead.
 
 ## Git
 
