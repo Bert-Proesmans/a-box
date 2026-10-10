@@ -1,9 +1,10 @@
 #!@busybox@/bin/busybox sh
 # PID 1 of the updater initrd. Brings up the network (DHCP for IPv4, router advertisements for
-# IPv6), mounts the main root and ESP, installs the system named by the pointer (retrying every
-# 30s while none is installed) and prunes old generations. Then it installs systemd-boot, kernels
-# and initrds of the kept generations on the ESP, registers systemd-boot as a firmware boot entry
-# that is not in BootOrder, makes it BootNext and reboots. The boot order is never changed.
+# IPv6; Google Public DNS when the pointer host does not resolve), mounts the main root and ESP,
+# installs the system named by the pointer (retrying every 30s while none is installed) and prunes
+# old generations. Then it installs systemd-boot, kernels and initrds of the kept generations on
+# the ESP, registers systemd-boot as a firmware boot entry that is not in BootOrder, makes it
+# BootNext and reboots. The boot order is never changed.
 
 pointer_url=@pointerUrl@
 keep=@keepGenerations@
@@ -31,7 +32,8 @@ profile=$profiles/system
 loader=EFI/a-box/systemd-bootx64.efi
 loader_efi='\EFI\a-box\systemd-bootx64.efi'
 
-log() { echo "a-box: $*"; }
+# stderr: functions whose stdout is captured log too.
+log() { echo "a-box: $*" >&2; }
 
 fatal() {
   log "$*"
@@ -127,12 +129,37 @@ valid_store_path() {
   case $rest in */*) return 1 ;; esac
 }
 
-fetch_pointer() {
-  local want
-  want=$(curl --fail --silent --show-error --location --max-time 30 \
-    --retry 3 --retry-all-errors "$pointer_url") || return 1
-  want=$(echo "$want" | tr -d '[:space:]')
+# Google Public DNS. On SLAAC the resolver stays unknown: the kernel hands RDNSS options of router
+# advertisements to userspace, which runs no listener, and no DHCPv6 client runs. musl then asks
+# 127.0.0.1. musl queries all nameservers at once and takes the first answer, so the fallback
+# replaces the configured servers instead of joining them.
+fallback_dns='nameserver 2001:4860:4860::8888
+nameserver 2001:4860:4860::8844
+nameserver 8.8.8.8'
 
+get_pointer() {
+  curl --fail --silent --show-error --location --max-time 30 \
+    --retry 3 --retry-all-errors "$pointer_url"
+}
+
+fetch_pointer() {
+  local want rc=0 prev
+  want=$(get_pointer) || rc=$?
+
+  # curl exit 6: host not resolved. Nix resolves the substituters through the same file later.
+  prev=$(cat /etc/resolv.conf 2>/dev/null) || true
+  if [ "$rc" = 6 ] && [ "$prev" != "$fallback_dns" ]; then
+    log "name resolution failed; retrying with Google Public DNS"
+    echo "$fallback_dns" >/etc/resolv.conf
+    rc=0
+    want=$(get_pointer) || rc=$?
+    if [ "$rc" = 6 ]; then
+      echo "$prev" >/etc/resolv.conf
+    fi
+  fi
+  [ "$rc" = 0 ] || return 1
+
+  want=$(echo "$want" | tr -d '[:space:]')
   if ! valid_store_path "$want"; then
     log "pointer is not a store path: $want"
     return 1

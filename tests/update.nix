@@ -16,7 +16,11 @@ in
   };
 
   nodes.cache =
-    { nodes, ... }:
+    { config, nodes, ... }:
+    let
+      # Google Public DNS's IPv6 address, served by the cache in the IPv6-only subtest.
+      googleDns = "2001:4860:4860::8888";
+    in
     {
       networking.firewall.enable = false;
 
@@ -28,6 +32,7 @@ in
         2
         3
         4
+        5
       ];
       environment.systemPackages = [ publish ];
 
@@ -42,15 +47,41 @@ in
         };
       };
 
+      # DHCP hands out this node as DNS server, which resolves the cache name.
       services.dnsmasq = {
         enable = true;
         resolveLocalQueries = false;
         settings = {
-          port = 0;
           interface = "eth1";
           bind-dynamic = true;
           dhcp-range = "192.168.1.100,192.168.1.200,1h";
+          no-resolv = true;
+          # Authoritative: NODATA for AAAA. musl ignores REFUSED and would time out.
+          local = "/a-box.test/";
+          host-record = "cache.a-box.test,${config.networking.primaryIPAddress}";
         };
+      };
+
+      # IPv6-only subtest, started by the test script: router advertisements without DNS
+      # servers, and a resolver standing in for Google Public DNS.
+      services.radvd = {
+        enable = true;
+        config = ''
+          interface eth1 {
+            AdvSendAdvert on;
+            prefix 2001:db8:1::/64 { };
+          };
+        '';
+      };
+      systemd.services.radvd.wantedBy = lib.mkForce [ ];
+
+      systemd.services.google-dns.serviceConfig = {
+        ExecStartPre = "${pkgs.iproute2}/bin/ip addr replace ${googleDns}/128 dev lo";
+        ExecStart = lib.concatStringsSep " " [
+          "${pkgs.dnsmasq}/bin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file="
+          "--no-resolv --no-hosts --bind-interfaces --listen-address=${googleDns} --local=/a-box.test/"
+          "--host-record=cache.a-box.test,${config.networking.primaryIPv6Address}"
+        ];
       };
     };
 
@@ -97,6 +128,13 @@ in
               fsType = "ext4";
             };
           };
+
+          # eth0 on an empty hub. QEMU's user network would hand the updater a DHCP lease with its
+          # own DNS server, and IPv6 router advertisements.
+          qemu.networkingOptions = lib.mkForce [
+            "-net nic,netdev=user.0,model=virtio"
+            "-netdev hubport,id=user.0,hubid=0"
+          ];
         };
       };
     };
@@ -105,7 +143,8 @@ in
     { nodes, ... }:
     let
       gen = nodes.machine.system.build.a-box-test-generation;
-      cacheUrl = "http://${nodes.cache.networking.primaryIPAddress}";
+      # Resolved through DHCP-provided DNS, or through the fallback in the IPv6-only subtest.
+      cacheUrl = "http://cache.a-box.test";
 
       updater = pkgs.callPackage ../updater {
         pointerUrl = "${cacheUrl}/a-box/machine";
@@ -160,7 +199,7 @@ in
       import subprocess
       import tempfile
 
-      gens = {1: "${gen 1}", 2: "${gen 2}", 3: "${gen 3}", 4: "${gen 4}"}
+      gens = {1: "${gen 1}", 2: "${gen 2}", 3: "${gen 3}", 4: "${gen 4}", 5: "${gen 5}"}
 
       def publish(n):
           cache.succeed(
@@ -250,6 +289,17 @@ in
           cache.succeed("systemctl stop nginx")
           machine.reboot()
           expect(4)
+
+      with subtest("IPv6-only network without DNS: generation 5 installs through Google Public DNS"):
+          cache.succeed("systemctl start nginx")
+          publish(5)
+
+          # No DHCP; SLAAC leaves the updater without DNS servers.
+          cache.succeed("systemctl stop dnsmasq")
+          cache.succeed("systemctl start radvd google-dns")
+          machine.reboot()
+          machine.wait_for_console_text("retrying with Google Public DNS")
+          expect(5)
 
       with subtest("firmware boot order is unchanged"):
           t.assertEqual(boot_order(), order)
