@@ -1,7 +1,7 @@
 # GitHub Actions workflow "publish", run on push to main or manually, serialized in concurrency group
-# "publish". Builds every machine's toplevel and the publish tool, then runs a-box-publish per machine,
-# uploading to B2 nix-cache and the machine's pointerUrl path (rejected if outside
-# storage.proesmans.eu), signed with NIX_SIGNING_KEY.
+# "publish". Builds the main system's toplevel and the publish tool, then runs a-box-publish,
+# uploading to B2 nix-cache and the pointerUrl path (rejected if outside storage.proesmans.eu),
+# signed with NIX_SIGNING_KEY.
 # Secrets: NIX_SIGNING_KEY, B2_KEY_ID, B2_APPLICATION_KEY. Variables: B2_BUCKET.
 
 name: publish
@@ -25,9 +25,7 @@ jobs:
 
       - name: Build
         run: |
-          for machine in $(nix-instantiate --eval --json -A machineNames | jq -r '.[]'); do
-            nix-build -A "machines.$machine.toplevel" -o "result-$machine"
-          done
+          nix-build -A toplevel -o result-toplevel
           nix-build -A publish -o result-publish
 
       - name: Publish
@@ -40,16 +38,14 @@ jobs:
           export A_BOX_SIGNING_KEY="$RUNNER_TEMP/cache.sec"
           printf '%s' "$NIX_SIGNING_KEY" > "$A_BOX_SIGNING_KEY"
 
-          # The pointer goes where the machine reads it: pointerUrl relative to the bucket's URL.
+          # The pointer goes where the updater reads it: pointerUrl relative to the bucket's URL.
           storage=https://storage.proesmans.eu/
-          for machine in $(nix-instantiate --eval --json -A machineNames | jq -r '.[]'); do
-            url=$(nix-instantiate --eval --json -A "machines.$machine.pointerUrl" | jq -r .)
-            if [[ $url != "$storage"* ]]; then
-              echo "machines.$machine.pointerUrl ($url) is outside $storage" >&2
-              exit 1
-            fi
+          url=$(nix-instantiate --eval --json -A pointerUrl | jq -r .)
+          if [[ $url != "$storage"* ]]; then
+            echo "pointerUrl ($url) is outside $storage" >&2
+            exit 1
+          fi
 
-            A_BOX_CACHE_DEST="b2:${{ vars.B2_BUCKET }}/nix-cache" \
-            A_BOX_POINTER_DEST="b2:${{ vars.B2_BUCKET }}/${url#"$storage"}" \
-              ./result-publish/bin/a-box-publish "result-$machine"
-          done
+          A_BOX_CACHE_DEST="b2:${{ vars.B2_BUCKET }}/nix-cache" \
+          A_BOX_POINTER_DEST="b2:${{ vars.B2_BUCKET }}/${url#"$storage"}" \
+            ./result-publish/bin/a-box-publish result-toplevel

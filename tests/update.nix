@@ -1,13 +1,19 @@
 # NixOS VM test "a-box-update": node `cache` serves a signed binary cache and update pointer over
-# nginx and DHCP via dnsmasq; node `machine` boots the a-box install image through OVMF.
-# Subtests: gen 1 install and root growth, gen 2 update, gen 3 update with gen 1 GC, failed update,
-# partial download resumed into gen 4, offline boot.
+# nginx and DHCP via dnsmasq; node `machine` boots, through OVMF, a disk holding the updater UKI on
+# its ESP (as /EFI/BOOT/BOOTX64.EFI) and an empty main root partition. The updater installs
+# systemd-boot on that ESP and hands over with BootNext.
+# Subtests: gen 1 install, gen 2 update, gen 3 update with gen 1 GC, failed update, partial download
+# resumed into gen 4, offline boot. The firmware boot order stays untouched throughout.
 { lib, pkgs, ... }:
 let
   publish = pkgs.callPackage ../publish { };
+  layout = import ../layout.nix;
 in
 {
   name = "a-box-update";
+
+  # An updater stuck in its emergency shell would otherwise hold the build for an hour.
+  globalTimeout = 1500;
 
   defaults = {
     # Nested virtualisation: TSC-deadline timers never fire.
@@ -58,18 +64,14 @@ in
     {
       config,
       lib,
-      nodes,
       extendModules,
       modulesPath,
       ...
     }:
-    let
-      cacheUrl = "http://${nodes.cache.networking.primaryIPAddress}";
-    in
     {
       imports = [
         ../modules/main.nix
-        ../machines/example/configuration.nix
+        ../configuration.nix
         # Smaller closure: the build host keeps VM disks in RAM-backed temp space.
         (modulesPath + "/profiles/minimal.nix")
       ];
@@ -80,26 +82,6 @@ in
       };
 
       config = {
-        a-box = {
-          pointerUrl = "${cacheUrl}/a-box/machine";
-          substituters = [ "${cacheUrl}/nix-cache" ];
-          trustedPublicKeys = [ (lib.fileContents ./cache-key.pub) ];
-          updaterModules = [
-            {
-              boot.kernelParams = [
-                "lapic=notscdeadline"
-                "systemd.show_status=true"
-                "console=ttyS0,115200"
-              ];
-            }
-            # A distinct updater per generation, so the ESP check proves refresh_updater ran.
-            {
-              boot.initrd.systemd.contents."/etc/a-box-generation".text =
-                toString config.a-box-test.generation;
-            }
-          ];
-        };
-
         environment.etc."a-box-generation".text = toString config.a-box-test.generation;
         system.disableInstallerTools = true;
 
@@ -109,15 +91,15 @@ in
             modules = [ { a-box-test.generation = n; } ];
           }).config.system.build.toplevel;
 
-        # Boot the install image through OVMF, nothing from the host store.
+        # Boot the test disk through OVMF, nothing from the host store.
         virtualisation = {
           directBoot.enable = false;
           mountHostNixStore = false;
           useEFIBoot = true;
-          memorySize = 1024;
+          memorySize = 1536;
           fileSystems = lib.mkForce {
             "/" = {
-              device = "/dev/disk/by-partlabel/${config.a-box.layout.rootLabel}";
+              device = "/dev/disk/by-partlabel/${layout.rootLabel}";
               fsType = "ext4";
             };
           };
@@ -129,6 +111,55 @@ in
     { nodes, ... }:
     let
       gen = nodes.machine.system.build.a-box-test-generation;
+      cacheUrl = "http://${nodes.cache.networking.primaryIPAddress}";
+
+      updater = pkgs.callPackage ../updater {
+        pointerUrl = "${cacheUrl}/a-box/machine";
+        substituters = [ "${cacheUrl}/nix-cache" ];
+        trustedPublicKeys = [ (lib.fileContents ./cache-key.pub) ];
+        inherit (layout) espLabel rootLabel;
+        kernelParams = [
+          "console=ttyS0,115200"
+          "lapic=notscdeadline"
+        ];
+      };
+
+      # What an admin does by hand: the updater on the ESP, an ext4 root partition next to it.
+      disk =
+        (import (pkgs.path + "/nixos/lib/eval-config.nix") {
+          system = null;
+          modules = [
+            (pkgs.path + "/nixos/modules/image/repart.nix")
+            {
+              nixpkgs.pkgs = pkgs;
+              system.stateVersion = lib.trivial.release;
+              image.repart = {
+                enable = true;
+                name = "a-box-test";
+                sectorSize = 512;
+                partitions = {
+                  "10-esp" = {
+                    contents."/EFI/BOOT/BOOTX64.EFI".source = updater.uki;
+                    repartConfig = {
+                      Type = "esp";
+                      Format = "vfat";
+                      Label = layout.espLabel;
+                      SizeMinBytes = "256M";
+                      SizeMaxBytes = "256M";
+                    };
+                  };
+                  "20-root".repartConfig = {
+                    Type = "linux-generic";
+                    Format = "ext4";
+                    Label = layout.rootLabel;
+                    SizeMinBytes = "4G";
+                    SizeMaxBytes = "4G";
+                  };
+                };
+              };
+            }
+          ];
+        }).config.system.build.image;
     in
     ''
       import os
@@ -150,26 +181,30 @@ in
           machine.wait_for_unit("multi-user.target")
           t.assertEqual(machine.succeed("cat /etc/a-box-generation").strip(), str(n))
           t.assertEqual(machine.succeed("readlink -f /run/current-system").strip(), gens[n])
+          # Started by systemd-boot from the ESP the updater filled, not by the updater or firmware.
+          t.assertIn(f"init={gens[n]}/init", machine.succeed("cat /proc/cmdline"))
+          machine.succeed("ls /sys/firmware/efi/efivars | grep -q '^LoaderEntrySelected-'")
+
+      def boot_order():
+          return machine.succeed("cat /sys/firmware/efi/efivars/BootOrder-* 2>/dev/null | od -An -tx1").strip()
 
       cache.wait_for_unit("nginx.service")
       cache.wait_for_unit("dnsmasq.service")
 
-      with subtest("install image boots generation 1 and grows root"):
+      with subtest("updater installs generation 1 and starts it"):
           publish(1)
 
-          # Writable overlay on the image, larger than the image so the root partition must grow.
+          # Writable overlay on the disk, so every subtest starts from the previous one's state.
           # QEMU reads NIX_DISK_IMAGE at start; set it only once cache is running.
-          disk = tempfile.NamedTemporaryFile()
+          overlay = tempfile.NamedTemporaryFile()
           subprocess.run([
               "${nodes.machine.virtualisation.qemu.package}/bin/qemu-img", "create",
-              "-f", "qcow2", "-b", "${nodes.machine.system.build.a-box-image}/a-box.raw", "-F", "raw",
-              disk.name, "8G",
+              "-f", "qcow2", "-b", "${disk}/a-box-test.raw", "-F", "raw", overlay.name,
           ], check=True)
-          os.environ["NIX_DISK_IMAGE"] = disk.name
+          os.environ["NIX_DISK_IMAGE"] = overlay.name
           machine.start(allow_reboot=True)
           expect(1)
-          size = int(machine.succeed("df --output=size -B1 / | tail -n1"))
-          t.assertGreater(size, 6 * 1024**3)
+          order = boot_order()
 
       with subtest("generation 2 installs, generation 1 kept"):
           publish(2)
@@ -183,10 +218,6 @@ in
           expect(3)
           machine.fail(f"test -e {gens[1]}")
           machine.succeed(f"test -e {gens[2]}")
-
-          # gpt-auto mounts the ESP at /boot.
-          t.assertEqual(machine.succeed("ls /boot/loader/entries").split(), ["a-box-2.conf", "a-box-3.conf"])
-          machine.succeed("cmp /boot/EFI/Linux/a-box-updater.efi /run/current-system/a-box-updater.efi")
 
       with subtest("failed update keeps generation 3"):
           # Valid store path, absent from the cache.
@@ -225,5 +256,8 @@ in
           cache.succeed("systemctl stop nginx")
           machine.reboot()
           expect(4)
+
+      with subtest("firmware boot order is unchanged"):
+          t.assertEqual(boot_order(), order)
     '';
 }

@@ -1,6 +1,7 @@
-# Top-level entry point: imports nixpkgs (x86_64-linux) from lon.nix and evaluates each machine
-# (currently `example`) with modules/main.nix. Exposes pkgs, machineNames,
-# machines.<name>.{toplevel,image,updater,pointerUrl}, publish, and tests.update (NixOS VM test).
+# Top-level entry point: imports nixpkgs (x86_64-linux) from lon.nix. Evaluates the one main system
+# (configuration.nix with modules/main.nix) and builds its updater (updater/) separately. Every
+# install is an instance of that one system. Exposes pkgs, pointerUrl, toplevel, updater,
+# publish, and tests.update (NixOS VM test).
 
 let
   sources = import ./lon.nix;
@@ -11,32 +12,37 @@ let
     overlays = [ ];
   };
 
-  evalMachine =
-    configuration:
-    import (sources.nixpkgs + "/nixos/lib/eval-config.nix") {
-      system = null;
-      modules = [
-        ./modules/main.nix
-        configuration
-        { nixpkgs.pkgs = pkgs; }
-      ];
-    };
+  storage = "https://storage.proesmans.eu";
+  pointerUrl = "${storage}/a-box/main";
 
-  machines = {
-    example = evalMachine ./machines/example/configuration.nix;
+  layout = import ./layout.nix;
+
+  main = import (sources.nixpkgs + "/nixos/lib/eval-config.nix") {
+    system = null;
+    modules = [
+      ./modules/main.nix
+      ./configuration.nix
+      { nixpkgs.pkgs = pkgs; }
+    ];
   };
 in
 {
-  inherit pkgs;
+  inherit pkgs pointerUrl;
 
-  machineNames = builtins.attrNames machines;
+  inherit (main.config.system.build) toplevel;
 
-  machines = builtins.mapAttrs (_: machine: {
-    inherit (machine.config.system.build) toplevel;
-    image = machine.config.system.build.a-box-image;
-    updater = machine.config.system.build.a-box-updater;
-    inherit (machine.config.a-box) pointerUrl;
-  }) machines;
+  updater = pkgs.callPackage ./updater {
+    inherit pointerUrl;
+    inherit (layout) espLabel rootLabel;
+    substituters = [
+      "${storage}/nix-cache"
+      "https://cache.nixos.org"
+    ];
+    trustedPublicKeys = [
+      (pkgs.lib.fileContents ./keys/cache.pub)
+      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+    ];
+  };
 
   publish = pkgs.callPackage ./publish { };
 

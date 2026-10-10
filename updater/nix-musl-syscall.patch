@@ -1,0 +1,10 @@
+--- a/src/libutil/unix/file-descriptor.cc
++++ b/src/libutil/unix/file-descriptor.cc
+@@ -5,6 +5,7 @@
+ 
+ #include <fcntl.h>
+ #include <unistd.h>
++#include <sys/syscall.h>
+ #include <span>
+ 
+ #include "util-config-private.hh"
