@@ -322,7 +322,7 @@ in
 
           nix.settings = {
             max-jobs = 2;
-            cores = 2;
+            # cores = 2;
             connect-timeout = 5;
             log-lines = 25;
             experimental-features = [
