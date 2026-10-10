@@ -1,17 +1,11 @@
 {
   lib,
   stdenv,
+  callPackage,
   runCommand,
   writeText,
   replaceVarsWith,
   buildEnv,
-  gnumake,
-  flex,
-  bison,
-  bc,
-  perl,
-  linux,
-  linuxKernel,
   makeInitrdNG,
   systemd,
   systemdUkify,
@@ -33,8 +27,8 @@
   keepGenerations ? 2,
   # Kernel command line of the updater.
   kernelParams ? [ "quiet" ],
-  # Extra kernel config lines (`CONFIG_X=y`) for the hardware at hand, e.g. another NIC driver.
-  kernelConfig ? "",
+  # Extra structured kernel config for the hardware at hand, e.g. `{ R8169 = lib.kernel.yes; }` for another NIC driver.
+  kernelConfig ? { },
   # Packages providing `lib/firmware`, for drivers that need it.
   firmware ? [ ],
 }:
@@ -49,50 +43,7 @@ let
   # The static build of efivar does not link. musl keeps the dynamic libc small.
   efibootmgr = pkgsMusl.efibootmgr;
 
-  # Allnoconfig plus kernel.config: only what this updater needs, all built in.
-  kernelConfigFile =
-    runCommand "a-box-updater-kernel.config"
-      {
-        nativeBuildInputs = [
-          gnumake
-          stdenv.cc
-          flex
-          bison
-          bc
-          perl
-        ];
-        inherit (linux) src;
-        fragment = ./kernel.config;
-        inherit kernelConfig;
-        passAsFile = [ "kernelConfig" ];
-      }
-      ''
-        mkdir source
-        tar -xf $src -C source --strip-components=1
-        cd source
-        patchShebangs scripts
-
-        make ARCH=x86_64 allnoconfig
-        scripts/kconfig/merge_config.sh -m .config $fragment $kernelConfigPath
-        make ARCH=x86_64 olddefconfig
-
-        # Kconfig silently drops symbols whose dependencies are missing.
-        failed=
-        while read -r line; do
-          if ! grep -qxF "$line" .config; then
-            echo "kernel config not honoured: $line" >&2
-            failed=1
-          fi
-        done < <(grep -hE '^(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set)' $fragment $kernelConfigPath)
-        [ -z "$failed" ]
-
-        cp .config $out
-      '';
-
-  kernel = linuxKernel.manualConfig {
-    inherit (linux) version src;
-    configfile = kernelConfigFile;
-  };
+  kernel = callPackage ./kernel.nix { extraConfig = kernelConfig; };
 
   # nixos-install without its bootloader step: no flake, no nixos-enter, no jq.
   installer = nixos-install.override {
