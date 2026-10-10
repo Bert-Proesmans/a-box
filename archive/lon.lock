@@ -15,17 +15,17 @@
       "type": "Tarball",
       "fetchType": "tarball",
       "origin": "https://channels.nixos.org/nixos-unstable/nixexprs.tar.zst",
-      "revision": "151fa4e8ddfdd8dd25d945ad94ed54a13de9f6e4",
-      "url": "https://releases.nixos.org/nixos/unstable/nixos-26.11pre1086391.151fa4e8ddfd/nixexprs.tar.zst?rev=151fa4e8ddfdd8dd25d945ad94ed54a13de9f6e4&lastModified=1791260994",
-      "hash": "sha256-MFBjw66d4h06MvpW6lIl7RwarLteD0sk859CncGwb1Q="
+      "revision": "e7439b6b14ad3cc35d05608ebca9bce01a25f5f8",
+      "url": "https://releases.nixos.org/nixos/unstable/nixos-26.11pre1087755.e7439b6b14ad/nixexprs.tar.zst?rev=e7439b6b14ad3cc35d05608ebca9bce01a25f5f8&lastModified=1791456040",
+      "hash": "sha256-gRZ/s8WQJ2CsXdhcDVQH34qxuL0MuMCOs3aBiK1Prsw="
     },
     "nixpkgs": {
       "type": "Tarball",
       "fetchType": "tarball",
       "origin": "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst",
-      "revision": "7dd199b0e2993e37b4775ed66b1c291699608c9f",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1086972.7dd199b0e299/nixexprs.tar.zst?rev=7dd199b0e2993e37b4775ed66b1c291699608c9f&lastModified=1791336361",
-      "hash": "sha256-7WQwlykef1x8n7aoyw4XP6882i2NRs5F6dVCXZ1NI1g="
+      "revision": "8edc0c72e3a38faf5434e40d1f19431125fe4b30",
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1088030.8edc0c72e3a3/nixexprs.tar.zst?rev=8edc0c72e3a38faf5434e40d1f19431125fe4b30&lastModified=1791487292",
+      "hash": "sha256-6BIvCXtdLW4HQwsOGkgH444aB3vCbHypE9TA78ireh8="
     },
     "obsidian-mcp": {
       "type": "GitHub",
