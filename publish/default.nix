@@ -1,6 +1,3 @@
-# Packages ./publish.sh as the `a-box-publish` shell application via writeShellApplication.
-# Runtime inputs are coreutils, curl, findutils, gnused and rclone; nix comes from the host.
-
 {
   writeShellApplication,
   coreutils,

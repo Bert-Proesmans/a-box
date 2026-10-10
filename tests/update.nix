@@ -1,9 +1,3 @@
-# NixOS VM test "a-box-update": node `cache` serves a signed binary cache and update pointer over
-# nginx and DHCP via dnsmasq; node `machine` boots, through OVMF, a disk holding the updater UKI on
-# its ESP (as /EFI/BOOT/BOOTX64.EFI) and an empty main root partition. The updater installs
-# systemd-boot on that ESP and hands over with BootNext.
-# Subtests: gen 1 install, gen 2 update, gen 3 update with gen 1 GC, failed update, partial download
-# resumed into gen 4, offline boot. The firmware boot order stays untouched throughout.
 { lib, pkgs, ... }:
 let
   publish = pkgs.callPackage ../publish { };

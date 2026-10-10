@@ -1,8 +1,3 @@
-# Top-level entry point: imports nixpkgs (x86_64-linux) from lon.nix. Evaluates the one main system
-# (configuration.nix with modules/main.nix) and builds its updater (updater/) separately. Every
-# install is an instance of that one system. Exposes pkgs, pointerUrl, toplevel, updater,
-# publish, and tests.update (NixOS VM test).
-
 let
   sources = import ./lon.nix;
 
