@@ -21,9 +21,9 @@ Applies repo-wide.
 
 ## Documentation
 
-- Documentation is descriptive only. Sources of truth: text the user agreed to verbatim, and code. Write nothing knowledgeable beyond them.
-- Every code file starts with a 2-3 sentence comment describing its contents. A subagent with clean context reads the file and writes it.
-- Each folder may have a README.md: a lookup table (repo layout) summarizing the file descriptions.
+- Documentation is prescriptive: state what the code is for and what it should do, not a dry account of what it contains. Sources of truth: text the user agreed to verbatim, and code. Write nothing knowledgeable beyond them.
+- Each folder may have a README.md: a lookup table (repo layout) giving each file's goal in one holistic line.
+- When a README needs a file's description, start an ad-hoc subagent with clean context. It reads the file and writes the summary, focused on the goal of the code.
 - Other README content may be suggested; content not derived from the sources of truth needs user approval.
 
 ## Testing
