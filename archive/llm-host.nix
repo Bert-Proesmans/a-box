@@ -313,6 +313,7 @@ in
           boot.loader.efi.canTouchEfiVariables = false;
 
           networking.hostName = "llm-host";
+          networking.firewall.allowedTCPPorts = [ config.services.code-server.port ];
 
           security.sudo-rs = {
             enable = true;
@@ -345,12 +346,16 @@ in
               "wheel" # Enable 'sudo' for the user
               "systemd-journal" # Read the systemd service journal without sudo
               "kvm" # Access kvm control device
+              config.users.groups.coders.name
             ];
             openssh.authorizedKeys.keys = [
               "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDOs8kDMMm/QFeELt79EG9akdfX7dlfRuTezwVEqbPsM bert@B-PC"
               "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILEeQ/KEIWbUKBc4bhZBUHsBB0yJVZmBuln8oSVrtcA5 bert@B-PC"
             ];
             packages = [ ];
+          };
+          users.groups.coders = {
+            # description = "Shared ownership over code resources";
           };
 
           # Force be-latin keymap (= BE-AZERTY-ISO)
@@ -420,6 +425,7 @@ in
             pkgs.clang-tools # clangd (LSP)
             pkgs.rust-analyzer # Rust LSP
             (pkgs.python3.withPackages (p: [ p.virtualenv ]))
+            pkgs.nixfmt-rs # nixfmt
           ];
 
           services.btrfs.autoScrub = {
@@ -495,6 +501,72 @@ in
               "systemd-machine-id-setup --commit --root /persistent"
             ];
           };
+
+          services.code-server = {
+            # WARN; Assumes service runs in isolated network
+            # ERROR; package code-server is NOT cached by Hydra! (2026-10)
+            enable = false;
+            host = "0.0.0.0";
+            port = 4444; # Default
+            auth = "none"; # "password" or "none"
+            disableTelemetry = true;
+            disableUpdateCheck = true;
+            extraGroups = [ config.users.groups.coders.name ];
+
+            package = pkgs.vscode-with-extensions.override {
+              vscode = pkgs.code-server;
+              vscodeExtensions = [
+                pkgs.vscode-extensions.jnoortheen.nix-ide
+              ];
+            };
+
+            # Extra packages to make available inside code-server terminal/environment
+            extraPackages = [ ];
+          };
+
+          services.openvscode-server = {
+            # WARN: Assumes service runs in an isolated network
+            enable = true;
+            host = "0.0.0.0";
+            port = 4444;
+            # Disables token auth (equivalent to code-server's auth = "none")
+            withoutConnectionToken = true;
+            telemetryLevel = "crash";
+            extraGroups = [ config.users.groups.coders.name ];
+
+            package = pkgs.vscode-with-extensions.override {
+              vscode = pkgs.openvscode-server;
+              vscodeExtensions = [
+                pkgs.vscode-extensions.jnoortheen.nix-ide
+              ];
+            };
+
+            # Extra packages to make available inside openvscode-server terminal/environment
+            extraPackages = [ ];
+          };
+
+          # WARN; Sharing code/repositories between users is not that straightforward!
+          # /srv/projects is created to ensure members of each group retain access.
+          #
+          # YOU MUST CONFIGURE GIT TO RUN IN SHARED ACCESS MODE (--shared group) !
+          #
+          # Per repository that is already initialised, run once;
+          # git config core.sharedRepository group
+          # 'group' is a literal, it modifies the internal file mask so git doesn't complain nor strip permissions.
+          systemd.tmpfiles.rules =
+            let
+              group = config.users.groups.coders.name;
+              dir = "/srv/projects";
+            in
+            [
+              # Format: Type Path Mode User Group Age Argument
+              # Mode 2770 = setgid bit (2), user rwx (7), group rwx (7), others none (0)
+              "d ${dir} 2770 root ${group} - -"
+              "A+ ${dir} - - - - group:${group}:rwx"
+
+              # Default ACLs to ensure group write access for all new files/folders
+              "A+ ${dir} - - - - default:group:${group}:rwx"
+            ];
         }
       )
     ];
