@@ -3,7 +3,8 @@
 
 case $1 in
   bound | renew)
-    ip addr flush dev "$interface"
+    # IPv4 only: SLAAC and link-local IPv6 addresses on the same interface stay.
+    ip -4 addr flush dev "$interface"
     ip addr add "$ip/$mask" dev "$interface"
 
     if [ ! -e /run/net-up ]; then
