@@ -1,7 +1,10 @@
 # The machine's VM: boots the test disk through OVMF, nothing from the host store.
 { layout }:
-{ lib, ... }:
+{ lib, modulesPath, ... }:
 {
+  # qemu-vm imports this profile, whose virtio initrd drivers would hide missing ones in main.nix.
+  disabledModules = [ (modulesPath + "/profiles/qemu-guest.nix") ];
+
   virtualisation = {
     directBoot.enable = false;
     mountHostNixStore = false;
