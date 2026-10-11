@@ -2,12 +2,6 @@
 mkTest {
   name = "ipv6";
 
-  # Known failure: step 3 logs "no pointer" instead of "up to date". The updater gets no IPv6
-  # default route within its 60 s network wait: router solicitations apparently get no reply, and radvd
-  # advertises unprompted only every 200-600 s. Step 1 passes through the 30 s retry loop, step 2
-  # by chance. Cause of the missing solicitation reply is open; the updater logs
-  # "virtio_net eth0: NETDEV WATCHDOG: transmit queue 0 timed out" on every boot.
-
   # SLAAC only: no DHCP, no DNS server on the link. The updater falls back to Google Public DNS.
   cache.imports = [
     radvd
