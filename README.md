@@ -12,7 +12,7 @@
 | `publish/` | `a-box-stage` and `a-box-upload` tools; see [publish/README.md](publish/README.md) |
 | `tests/` | NixOS VM tests of the updater and their cache key pair; see [tests/README.md](tests/README.md) |
 | `keys/cache.pub` | Nix binary cache public signing key `storage.proesmans.eu-1` |
-| `.github/workflows/publish.yml` | GitHub Actions workflow: a build job stages the main system with `a-box-stage` and hands it as an artifact to an upload job, whose Upload step alone holds the bucket credentials and runs `a-box-upload` to the B2 cache and the pointer `a-box/main` |
+| `.github/workflows/publish.yml` | GitHub Actions workflow: a build job stages the main system with `a-box-stage` and hands it as an artifact to an upload job, whose Upload step alone holds the bucket credentials and runs `a-box-upload` to the B2 cache and the pointer `nix-cache/a-box/main` |
 | `.gitignore` | Ignores `result*` and `/keys/*.sec` |
 | `AGENTS.md` | Agent guidelines: writing, working, documentation, testing, git |
 | `lsp.json` | Language server root markers for `nil`, `clangd`, `rust-analyzer` |

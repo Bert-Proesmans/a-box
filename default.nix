@@ -19,7 +19,7 @@ let
   };
 
   updater = pkgs.callPackage ./updater {
-    pointerUrl = "https://storage.proesmans.eu/a-box/main";
+    pointerUrl = "https://storage.proesmans.eu/nix-cache/a-box/main";
     inherit (layout) espLabel rootLabel;
     substituters = [
       "https://storage.proesmans.eu/nix-cache"

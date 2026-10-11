@@ -5,7 +5,7 @@
 #
 # Env:
 #   A_BOX_CACHE_DEST     rclone destination of the binary cache root, e.g. b2:bucket/nix-cache
-#   A_BOX_POINTER_DEST   rclone destination of the pointer file, e.g. b2:bucket/a-box/example
+#   A_BOX_POINTER_DEST   rclone destination of the pointer file, e.g. b2:bucket/nix-cache/a-box/example
 
 stage=$1
 

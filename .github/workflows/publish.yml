@@ -1,10 +1,10 @@
-# GitHub Actions workflow "publish", run on push to main or manually, serialized in concurrency group
-# "publish". Building and uploading are separate jobs on separate runners:
+# GitHub Actions workflow "publish", run manually, serialized in concurrency group "publish".
+# Building and uploading are separate jobs on separate runners:
 #
 #   build   builds the main system, stages it with a-box-stage, signed with NIX_SIGNING_KEY,
 #      |    and hands the stage over as workflow artifact "stage"
 #      v
-#   upload  uploads the artifact with a-box-upload to B2 nix-cache and a-box/main
+#   upload  uploads the artifact with a-box-upload to B2 nix-cache and nix-cache/a-box/main
 #
 # Bucket credentials reach only the Upload step. Keep them in environment "storage", so no other
 # job can read them.
@@ -13,8 +13,6 @@
 name: publish
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -78,5 +76,5 @@ jobs:
           RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_KEY_ID }}
           RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APPLICATION_KEY }}
           A_BOX_CACHE_DEST: b2:${{ vars.B2_BUCKET }}/nix-cache
-          A_BOX_POINTER_DEST: b2:${{ vars.B2_BUCKET }}/a-box/main
+          A_BOX_POINTER_DEST: b2:${{ vars.B2_BUCKET }}/nix-cache/a-box/main
         run: ./result-upload/bin/a-box-upload "$RUNNER_TEMP/stage"
