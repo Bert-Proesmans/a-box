@@ -7,9 +7,6 @@ let
     overlays = [ ];
   };
 
-  storage = "https://storage.proesmans.eu";
-  pointerUrl = "${storage}/a-box/main";
-
   layout = import ./layout.nix;
 
   main = import (sources.nixpkgs + "/nixos/lib/eval-config.nix") {
@@ -22,10 +19,10 @@ let
   };
 
   updater = pkgs.callPackage ./updater {
-    inherit pointerUrl;
+    pointerUrl = "https://storage.proesmans.eu/a-box/main";
     inherit (layout) espLabel rootLabel;
     substituters = [
-      "${storage}/nix-cache"
+      "https://storage.proesmans.eu/nix-cache"
       "https://cache.nixos.org"
     ];
     trustedPublicKeys = [
@@ -35,7 +32,7 @@ let
   };
 in
 {
-  inherit pkgs pointerUrl updater;
+  inherit pkgs updater;
 
   inherit (main.config.system.build) toplevel;
 
