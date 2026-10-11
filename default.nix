@@ -41,5 +41,5 @@ in
 
   publish = pkgs.callPackage ./publish { };
 
-  tests.update = pkgs.testers.runNixOSTest ./tests/update.nix;
+  tests.update = import ./tests/update { inherit pkgs; };
 }

@@ -1,0 +1,25 @@
+# Toplevels of generations 1 and 2, evaluated once for all scenarios.
+#
+# Evaluated as node `machine` of a test next to an empty node `cache`, as in every scenario: the
+# framework adds what the driver relies on (backdoor shell, /etc/hosts with the cache node).
+{
+  testers,
+  machine,
+  testDefaults,
+}:
+let
+  node =
+    (testers.runNixOSTest {
+      name = "a-box-update-generations";
+      defaults = testDefaults;
+      nodes = {
+        inherit machine;
+        cache = { };
+      };
+      testScript = "";
+    }).nodes.machine;
+in
+{
+  "1" = node.system.build.a-box-test-generation 1;
+  "2" = node.system.build.a-box-test-generation 2;
+}
