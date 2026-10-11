@@ -32,11 +32,11 @@ let
   };
 in
 {
-  inherit pkgs updater;
+  inherit pkgs;
 
   inherit (main.config.system.build) toplevel;
 
-  # Boot media: `nix-build -A updaterIso`, `-A installerIso`, `-A netboot`.
+  # Boot media: `nix-build -A updaterIso`, `-A installerIso`, `-A netboot`, `-A netboot.githubRelease`.
   updaterIso = updater.iso;
   inherit (updater) installerIso netboot;
 

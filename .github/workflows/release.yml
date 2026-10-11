@@ -1,0 +1,59 @@
+# GitHub Actions workflow "release", run manually, serialized in concurrency group "release".
+# Builds the boot media and overwrites the assets of the single release "latest", whose tag moves
+# to the built commit. boot.ipxe chains releases/latest/download/a-box-updater.efi, so the release
+# MUST stay marked Latest.
+#
+#   a-box-updater.iso     updater, CD or USB stick
+#   a-box-installer.iso   installer, CD or USB stick
+#   a-box-updater.efi     updater UKI, UEFI HTTP boot or UEFI PXE
+#   boot.ipxe             UEFI iPXE script chaining the UKI above
+
+name: release
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Build
+        run: |
+          nix-build -A updaterIso -o result-updater-iso
+          nix-build -A installerIso -o result-installer-iso
+          nix-build -A netboot.githubRelease -o result-netboot
+
+      # Flat, under the names the release serves them by.
+      - name: Collect
+        run: |
+          mkdir assets
+          cp result-updater-iso assets/a-box-updater.iso
+          cp result-installer-iso assets/a-box-installer.iso
+          cp result-netboot/a-box-updater.efi result-netboot/boot.ipxe assets/
+
+      # --clobber deletes each asset before uploading its replacement.
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag -f latest
+          git push -f origin refs/tags/latest
+
+          notes="Boot media built from $GITHUB_SHA."
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest --latest --notes "$notes"
+          else
+            gh release create latest --latest --title "a-box boot media" --notes "$notes"
+          fi
+          gh release upload latest assets/* --clobber
