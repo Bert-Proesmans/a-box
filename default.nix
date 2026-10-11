@@ -20,11 +20,6 @@ let
       { nixpkgs.pkgs = pkgs; }
     ];
   };
-in
-{
-  inherit pkgs pointerUrl;
-
-  inherit (main.config.system.build) toplevel;
 
   updater = pkgs.callPackage ./updater {
     inherit pointerUrl;
@@ -38,6 +33,15 @@ in
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
     ];
   };
+in
+{
+  inherit pkgs pointerUrl updater;
+
+  inherit (main.config.system.build) toplevel;
+
+  # Boot media: `nix-build -A updaterIso`, `-A installerIso`, `-A netboot`.
+  updaterIso = updater.iso;
+  inherit (updater) installerIso netboot;
 
   publish = pkgs.callPackage ./publish { };
 
