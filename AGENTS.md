@@ -29,6 +29,7 @@ Applies repo-wide.
 ## Testing
 
 - Tests run inside the Nix sandbox only (`nix-build -A tests.<name>`), never through a hand-launched driver or environment variables. Every setting a test needs lives in the test's Nix code.
+- Run VM tests as `d=$(nix-instantiate -A tests.<name>) && nix-store --realise "$d"`, not `nix-build`. `nix-build` keeps its evaluator (~1.2 GB) resident for the whole build; with the VMs on top, this ~5 GB host OOM-kills the build.
 - This host runs nested virtualisation (KVM in Hyper-V); TSC-deadline timers never fire. Put the workaround in the test's `defaults`: `virtualisation.qemu.options = [ "-cpu max,-kvmclock" ];` and `boot.kernelParams = [ "lapic=notscdeadline" ];`.
 - `boot.kernelParams` only reaches direct-boot kernels. Kernels booted from the ESP need `lapic=notscdeadline` in their own command line.
 
