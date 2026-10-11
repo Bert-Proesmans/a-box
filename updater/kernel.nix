@@ -34,6 +34,8 @@ let
       HYPERVISOR_GUEST = yes;
       PARAVIRT = yes;
       KVM_GUEST = yes;
+      HYPERV = yes;
+      HYPERV_VMBUS = yes;
       EFI = yes;
       EFI_STUB = yes;
       EFIVAR_FS = yes;
@@ -90,6 +92,7 @@ let
       VIRTIO_BLK = yes;
       SCSI_LOWLEVEL = yes;
       SCSI_VIRTIO = yes;
+      HYPERV_STORAGE = yes;
 
       # Network: IPv4 with AF_PACKET (DHCP client), IPv6 with router advertisements (SLAAC)
       NET = yes;
@@ -100,6 +103,7 @@ let
       NETDEVICES = yes;
       ETHERNET = yes;
       VIRTIO_NET = yes;
+      HYPERV_NET = yes;
       NET_VENDOR_INTEL = yes;
       E1000 = yes;
       E1000E = yes;
