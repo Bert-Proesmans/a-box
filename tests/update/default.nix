@@ -32,7 +32,6 @@ in
 pkgs.lib.genAttrs [
   "ipv4"
   "ipv6"
-  "dualstack"
   "no-dns"
   "offline"
   "corrupt"
