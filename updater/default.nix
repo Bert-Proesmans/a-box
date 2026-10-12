@@ -22,9 +22,15 @@
   # Binary caches the system is downloaded from, and the keys their signatures must match.
   substituters,
   trustedPublicKeys,
-  # GPT partition names of the ESP (FAT) and the main root (ext4).
+  # GPT partition names of the ESP (FAT) and the data partition (btrfs), and the data partition's
+  # subvolume holding the main system's /nix.
   espLabel,
-  rootLabel,
+  dataLabel,
+  nixSubvolume,
+  # The installer's disk formatting: the main system's disko format script, without dependencies,
+  # and the placeholder in it that stands for the disk.
+  diskoFormat,
+  diskPlaceholder,
   # Generations kept in the main root's system profile and on the ESP.
   keepGenerations ? 2,
   # Kernel command line of the updater.
@@ -40,7 +46,10 @@ lib.makeScope newScope (self: {
     substituters
     trustedPublicKeys
     espLabel
-    rootLabel
+    dataLabel
+    nixSubvolume
+    diskoFormat
+    diskPlaceholder
     keepGenerations
     kernelParams
     firmware
@@ -55,6 +64,9 @@ lib.makeScope newScope (self: {
   bash = pkgsStatic.bashNonInteractive;
   # The static build of efivar does not link. musl keeps the dynamic libc small.
   efibootmgr = pkgsMusl.efibootmgr;
+
+  # Substitutes a script's @placeholders@ and shellchecks it; every script of the initrds goes through it.
+  mkScript = self.callPackage ./mk-script.nix { };
 
   # Shared by both initrds.
   initrdCompression = {
@@ -75,7 +87,9 @@ lib.makeScope newScope (self: {
   };
 
   # The installer's own kernel: the updater's plus keyboards, and the disk controllers, keyboards
-  # and displays of common hypervisors. The updater stays without.
+  # and displays of common hypervisors. The updater stays without. Formatting through the disko
+  # script needs nothing more: GPT, VFAT and btrfs (the script mounts the data partition to create
+  # its subvolumes) are in the updater's kernel, and the disk tools only use block device ioctls.
   installerKernel = self.callPackage ./kernel.nix {
     extraConfig =
       with lib.kernel;

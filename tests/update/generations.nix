@@ -4,6 +4,8 @@
 # framework adds what the driver relies on (backdoor shell, /etc/hosts with the cache node).
 {
   testers,
+  sources,
+  layout,
   machine,
   testDefaults,
 }:
@@ -12,6 +14,8 @@ let
     (testers.runNixOSTest {
       name = "a-box-update-generations";
       defaults = testDefaults;
+      # The main system's modules take them as module arguments.
+      node.specialArgs = { inherit sources layout; };
       nodes = {
         inherit machine;
         cache = { };

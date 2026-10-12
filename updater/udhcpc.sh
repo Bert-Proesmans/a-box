@@ -1,5 +1,6 @@
 #!@busybox@/bin/busybox sh
 # udhcpc lease script: addresses the interface; the first lease also sets the default route and DNS.
+# shellcheck disable=SC2154 # interface, ip, mask, router, dns: udhcpc sets them in the environment
 
 case $1 in
   bound | renew)

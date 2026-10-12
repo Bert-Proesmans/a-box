@@ -1,6 +1,16 @@
 {
   "version": "1",
   "sources": {
+    "disko": {
+      "type": "GitHub",
+      "fetchType": "tarball",
+      "owner": "nix-community",
+      "repo": "disko",
+      "branch": "master",
+      "revision": "725ea35e410ad83be4931d1bff7e090eacaf3563",
+      "url": "https://github.com/nix-community/disko/archive/725ea35e410ad83be4931d1bff7e090eacaf3563.tar.gz",
+      "hash": "sha256-uZkBR7yHdIKUFB5SZdfgh1qkGfI3XmYmI/lTiquxbck="
+    },
     "nixpkgs": {
       "type": "GitHub",
       "fetchType": "tarball",
@@ -10,6 +20,16 @@
       "revision": "e7439b6b14ad3cc35d05608ebca9bce01a25f5f8",
       "url": "https://github.com/nixos/nixpkgs/archive/e7439b6b14ad3cc35d05608ebca9bce01a25f5f8.tar.gz",
       "hash": "sha256-H83yz/do+hjOO0uujHyH8RgtIQP2v7Mw+cLwcZK/xKc="
+    },
+    "preservation": {
+      "type": "GitHub",
+      "fetchType": "tarball",
+      "owner": "nix-community",
+      "repo": "preservation",
+      "branch": "main",
+      "revision": "93416f4614ad2dfed5b0dcf12f27e57d27a5ab11",
+      "url": "https://github.com/nix-community/preservation/archive/93416f4614ad2dfed5b0dcf12f27e57d27a5ab11.tar.gz",
+      "hash": "sha256-mMI9IanU+Xw+pVogD2oT0I2kTmvz2Un/Apc5+CwUpEY="
     }
   }
 }

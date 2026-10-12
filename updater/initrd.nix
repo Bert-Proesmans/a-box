@@ -4,7 +4,7 @@
   lib,
   runCommand,
   writeText,
-  replaceVarsWith,
+  mkScript,
   buildEnv,
   makeInitrdNG,
   emptyDirectory,
@@ -21,7 +21,8 @@
   substituters,
   trustedPublicKeys,
   espLabel,
-  rootLabel,
+  dataLabel,
+  nixSubvolume,
   keepGenerations,
   firmware,
 }:
@@ -34,21 +35,20 @@ let
     util-linuxMinimal = emptyDirectory;
   };
 
-  init = replaceVarsWith {
+  init = mkScript {
     src = ./init.sh;
-    isExecutable = true;
     replacements = {
       busybox = "${busybox}";
       pointerUrl = lib.escapeShellArg pointerUrl;
       keepGenerations = toString keepGenerations;
       espLabel = lib.escapeShellArg espLabel;
-      rootLabel = lib.escapeShellArg rootLabel;
+      dataLabel = lib.escapeShellArg dataLabel;
+      nixSubvolume = lib.escapeShellArg nixSubvolume;
     };
   };
 
-  udhcpcScript = replaceVarsWith {
+  udhcpcScript = mkScript {
     src = ./udhcpc.sh;
-    isExecutable = true;
     replacements.busybox = "${busybox}";
   };
 

@@ -1,41 +1,28 @@
-# What an admin does by hand: the updater on the ESP, an ext4 root partition next to it.
+# The disk a manual install produces: the real installer ISO, booted through OVMF in a QEMU VM,
+# runs `a-box-install /dev/vda` on a blank disk. The result is the GPT with ESP, zram and data
+# partitions, btrfs with its subvolumes, and the test updater on the ESP. Needs KVM.
 {
-  lib,
-  pkgs,
-  layout,
+  runCommand,
+  qemu_kvm,
+  OVMF,
+  python3,
+
   updater,
 }:
-(import (pkgs.path + "/nixos/lib/eval-config.nix") {
-  system = null;
-  modules = [
-    (pkgs.path + "/nixos/modules/image/repart.nix")
-    {
-      nixpkgs.pkgs = pkgs;
-      system.stateVersion = lib.trivial.release;
-      image.repart = {
-        enable = true;
-        name = "a-box-test";
-        sectorSize = 512;
-        partitions = {
-          "10-esp" = {
-            contents."/EFI/BOOT/BOOTX64.EFI".source = updater.uki;
-            repartConfig = {
-              Type = "esp";
-              Format = "vfat";
-              Label = layout.espLabel;
-              SizeMinBytes = "256M";
-              SizeMaxBytes = "256M";
-            };
-          };
-          "20-root".repartConfig = {
-            Type = "linux-generic";
-            Format = "ext4";
-            Label = layout.rootLabel;
-            SizeMinBytes = "4G";
-            SizeMaxBytes = "4G";
-          };
-        };
-      };
-    }
-  ];
-}).config.system.build.image
+runCommand "a-box-test-disk"
+  {
+    nativeBuildInputs = [
+      qemu_kvm
+      (python3.withPackages (ps: [ ps.pexpect ]))
+    ];
+    requiredSystemFeatures = [ "kvm" ];
+
+    iso = updater.installerIso;
+    ovmfCode = "${OVMF.fd}/FV/OVMF_CODE.fd";
+    ovmfVars = "${OVMF.fd}/FV/OVMF_VARS.fd";
+    # Sparse: room for two generations in the data partition, but only written blocks count.
+    diskSize = "16G";
+  }
+  ''
+    python3 ${./install-disk.py} $out
+  ''

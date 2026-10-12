@@ -1,8 +1,13 @@
-{ pkgs }:
+{
+  pkgs,
+  sources,
+  layout,
+  diskoFormat,
+}:
 let
   # Shared pieces, each built once. Scenarios take what they need as arguments.
   scope = pkgs.lib.makeScope pkgs.newScope (self: {
-    layout = import ../../layout.nix;
+    inherit sources layout diskoFormat;
 
     # Both nodes and the generations.
     testDefaults = {
@@ -21,7 +26,7 @@ let
     mkTest = self.callPackage ./mk-test.nix { };
 
     # NixOS modules.
-    vm = import ./vm.nix { inherit (self) layout; };
+    vm = import ./vm.nix;
     machine = import ./machine.nix { inherit (self) vm; };
     cacheBase = import ./cache.nix { inherit (self) binaryCache; };
     dhcp = import ./dhcp.nix;
@@ -31,6 +36,7 @@ let
 in
 pkgs.lib.genAttrs [
   "ipv4"
+  "volatile"
   "ipv6"
   "no-dns"
   "offline"

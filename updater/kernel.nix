@@ -71,14 +71,16 @@ let
       FB_EFI = yes;
       FRAMEBUFFER_CONSOLE = yes;
 
-      # Main root (ext4) and ESP (FAT), GPT partitions found by name
+      # Nix subvolume (btrfs, zstd) and ESP (FAT), GPT partitions found by name
       PCI = yes;
       PCI_MSI = yes;
       BLOCK = yes;
       BLK_DEV = yes;
       PARTITION_ADVANCED = yes;
       EFI_PARTITION = yes;
-      EXT4_FS = yes;
+      BTRFS_FS = yes;
+      # Selected by BTRFS_FS; skip the boot-time benchmark
+      RAID6_PQ_BENCHMARK = no;
       VFAT_FS = yes;
       NLS_CODEPAGE_437 = yes;
       NLS_ISO8859_1 = yes;

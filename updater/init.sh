@@ -1,15 +1,17 @@
 #!@busybox@/bin/busybox sh
 # PID 1 of the updater initrd. Brings up the network (DHCP for IPv4, router advertisements for
-# IPv6; Google Public DNS when the pointer host does not resolve), mounts the main root and ESP,
-# installs the system named by the pointer (retrying every 30s while none is installed) and prunes
-# old generations. Then it installs systemd-boot, kernels and initrds of the kept generations on
+# IPv6; Google Public DNS when the pointer host does not resolve), mounts the /nix subvolume of the
+# data partition under a RAM /sysroot and the ESP, installs the system named by the pointer
+# (retrying every 30s while none is installed) and prunes old generations. Then it installs
+# systemd-boot, kernels and initrds of the kept generations on
 # the ESP, registers systemd-boot as a firmware boot entry that is not in BootOrder, makes it
 # BootNext and reboots. The boot order is never changed.
 
 pointer_url=@pointerUrl@
 keep=@keepGenerations@
 esp_label=@espLabel@
-root_label=@rootLabel@
+data_label=@dataLabel@
+nix_subvolume=@nixSubvolume@
 
 export PATH=/bin
 
@@ -261,7 +263,8 @@ write_entries() {
 
 # The main system carries the boot manager it was built with. Newest generation boots by default.
 install_loader() {
-  local src=$root$(readlink "$root$1/systemd")/lib/systemd/boot/efi/systemd-bootx64.efi
+  local src
+  src=$root$(readlink "$root$1/systemd")/lib/systemd/boot/efi/systemd-bootx64.efi
   mkdir -p "$esp/EFI/a-box"
   cmp -s "$src" "$esp/$loader" || copy_to_esp "$src" "$esp/$loader" || return 1
 
@@ -301,7 +304,9 @@ handoff() {
   register_loader || return 1
 }
 
-mount_part "$root_label" ext4 noatime "$root"
+# $root itself is a plain directory in RAM (nixos-install only writes /etc/NIXOS there); only the
+# /nix subvolume of the data partition persists.
+mount_part "$data_label" btrfs "subvol=$nix_subvolume,compress=zstd,noatime" "$root/nix"
 network
 
 # The initrd runs from RAM; keep nix's cache and scratch files on the main disk.
@@ -333,6 +338,6 @@ fi
 
 sync
 umount "$esp" || true
-umount "$root" || true
+umount "$root/nix" || true
 log "rebooting"
 reboot -f

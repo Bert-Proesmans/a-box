@@ -22,6 +22,10 @@
   };
 
   config = {
+    # qemu-vm replaces the system's fileSystems with `virtualisation.fileSystems`, unless that is
+    # empty: the generations keep the main system's mounts (zram root, /nix, /persistent, /boot).
+    virtualisation.fileSystems = lib.mkForce { };
+
     environment.etc."a-box-generation".text = toString config.a-box-test.generation;
     system.disableInstallerTools = true;
 

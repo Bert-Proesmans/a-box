@@ -1,15 +1,18 @@
-# Module imported by the main system. Mounts the root partition by its GPT name, loads the disk
-# drivers the updater has, and disables GRUB: the updater (../updater) installs the bootloader,
-# kernels and initrds on the ESP.
-
-let
-  layout = import ../layout.nix;
-in
+# Module imported by the main system, a volatile VM host: ephemeral root, state only through the
+# attached disk. The updater (../updater) installs the bootloader, kernels and initrds on the ESP,
+# so GRUB stays off.
 {
+  imports = [
+    ./disk.nix
+    ./ephemeral-root.nix
+    ./strict.nix
+    ./preservation.nix
+  ];
+
   boot.loader.grub.enable = false;
 
   # The updater kernel's disk controllers beyond NixOS's initrd defaults (AHCI, NVMe): virtio
-  # (QEMU/KVM) and Hyper-V storage. Without them the root partition never appears.
+  # (QEMU/KVM) and Hyper-V storage. Without them the data partitions never appear.
   boot.initrd.availableKernelModules = [
     "virtio_pci"
     "virtio_blk"
@@ -18,8 +21,12 @@ in
     "hv_storvsc"
   ];
 
-  fileSystems."/" = {
-    device = "/dev/disk/by-partlabel/${layout.rootLabel}";
-    fsType = "ext4";
-  };
+  virtualisation.hypervGuest.enable = true;
+
+  # Both loaded: harmless, and only the matching one binds. /dev/kvm needs nested virtualisation
+  # exposed by the outer hypervisor (Hyper-V: `Set-VMProcessor -ExposeVirtualizationExtensions $true`).
+  boot.kernelModules = [
+    "kvm-amd"
+    "kvm-intel"
+  ];
 }

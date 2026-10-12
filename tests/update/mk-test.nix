@@ -50,7 +50,7 @@ testers.runNixOSTest {
       def start():
           subprocess.run([
               "${nodes.machine.virtualisation.qemu.package}/bin/qemu-img", "create",
-              "-f", "qcow2", "-b", "${testDisk}/a-box-test.raw", "-F", "raw", overlay.name,
+              "-f", "qcow2", "-b", "${testDisk}", "-F", "qcow2", overlay.name,
           ], check=True)
           os.environ["NIX_DISK_IMAGE"] = overlay.name
           machine.start(allow_reboot=True)
@@ -71,6 +71,21 @@ testers.runNixOSTest {
           if boot_order is None:
               boot_order = order
           t.assertEqual(order, boot_order)
+
+          # The volatile host: RAM-backed root, the store and the persistent state on the data disk.
+          def mount(target, column):
+              return machine.succeed(f"findmnt -no {column} {target}").strip()
+
+          t.assertEqual(mount("/", "SOURCE,FSTYPE"), "/dev/zram0 ext4")
+          t.assertEqual(mount("/boot", "FSTYPE"), "vfat")
+          for target, subvol in [("/nix", "@nix"), ("/persistent", "@persistent")]:
+              t.assertEqual(mount(target, "FSTYPE"), "btrfs")
+              t.assertIn(f"subvol=/{subvol}", mount(target, "OPTIONS").split(","))
+              t.assertRegex(mount(target, "SOURCE"), f"^/dev/vda3\\[/{subvol}\\]$")
+
+          # The machine id is committed to /persistent at first boot.
+          t.assertEqual(machine.succeed("readlink /etc/machine-id").strip(), "/persistent/etc/machine-id")
+          t.assertRegex(machine.succeed("cat /persistent/etc/machine-id"), "^[0-9a-f]{32}\\n$")
 
       cache.wait_for_unit("nginx.service")
       cache.wait_for_unit("multi-user.target")

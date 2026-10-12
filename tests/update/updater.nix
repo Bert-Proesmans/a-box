@@ -1,8 +1,10 @@
-# The updater as the test disk carries it: pointer and binary cache on the cache node.
+# The updater as the test disk carries it: pointer and binary cache on the cache node. The
+# installer is the real one, with the disko format script of the real main system.
 {
   lib,
   pkgs,
   layout,
+  diskoFormat,
 }:
 let
   # Resolved through DHCP-provided DNS, or through the Google Public DNS fallback.
@@ -12,7 +14,14 @@ pkgs.callPackage ../../updater {
   pointerUrl = "${cacheUrl}/a-box/machine";
   substituters = [ "${cacheUrl}/nix-cache" ];
   trustedPublicKeys = [ (lib.fileContents ../cache-key.pub) ];
-  inherit (layout) espLabel rootLabel;
+  inherit (layout)
+    espLabel
+    dataLabel
+    nixSubvolume
+    diskPlaceholder
+    ;
+  inherit diskoFormat;
+  # The installer shares them: its own UKI needs the console and the timer workaround too.
   kernelParams = [
     "console=ttyS0,115200"
     "lapic=notscdeadline"

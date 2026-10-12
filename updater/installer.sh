@@ -6,7 +6,7 @@ export PATH=/bin
 export HOME=/root
 
 # The initrd carries no mountpoints.
-mkdir -p /dev /proc /sys /run /root
+mkdir -p /dev /proc /sys /run /root /tmp
 
 mount -t devtmpfs devtmpfs /dev
 exec </dev/console >/dev/console 2>&1
@@ -20,8 +20,8 @@ cat <<EOF
 a-box installer
 
   lsblk                   list disks
-  a-box-install DISK      wipe DISK, partition it for a-box and install the updater
-  a-box-install           install the updater on partitions named "@espLabel@" and "@rootLabel@"
+  a-box-install DISK      wipe DISK, lay it out for a-box and install the updater
+  a-box-install           install the updater on partitions named "@espLabel@" and "@dataLabel@"
   exit                    reboot
 
 EOF
