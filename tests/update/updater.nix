@@ -1,5 +1,3 @@
-# The updater as the test disk carries it: pointer and binary cache on the cache node. The
-# installer is the real one, with the disko format script of the real main system.
 {
   lib,
   pkgs,

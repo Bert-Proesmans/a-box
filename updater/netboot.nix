@@ -1,5 +1,3 @@
-# TFTP or HTTP root for netbooting the updater, for disks that are already prepared: the UKI for
-# UEFI HTTP boot or UEFI PXE, and boot.ipxe chaining it for UEFI iPXE.
 {
   runCommand,
   writeText,

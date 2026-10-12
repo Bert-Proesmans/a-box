@@ -1,4 +1,3 @@
-# Serves the binary cache and the pointer over HTTP. Network services come from the blocks.
 { binaryCache }:
 {
   networking.firewall.enable = false;

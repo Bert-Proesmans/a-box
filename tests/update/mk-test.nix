@@ -1,5 +1,3 @@
-# One update scenario: nodes cache and machine, the shared python prelude, then `testScript`.
-# `cache` is a NixOS module with the scenario's network blocks.
 {
   testers,
   testDefaults,

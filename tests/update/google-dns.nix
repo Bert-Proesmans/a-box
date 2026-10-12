@@ -1,4 +1,3 @@
-# Stand-in for Google Public DNS at `address`, resolving the cache name.
 { address }:
 {
   config,

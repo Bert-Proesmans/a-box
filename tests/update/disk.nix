@@ -1,6 +1,3 @@
-# The disk a manual install produces: the real installer ISO, booted through OVMF in a QEMU VM,
-# runs `a-box-install /dev/vda` on a blank disk. The result is the GPT with ESP, zram and data
-# partitions, btrfs with its subvolumes, and the test updater on the ESP. Needs KVM.
 {
   runCommand,
   qemu_kvm,

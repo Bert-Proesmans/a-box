@@ -1,4 +1,3 @@
-# Unified kernel image of `kernel`, `initrd` and the updater's kernel command line.
 {
   lib,
   stdenv,

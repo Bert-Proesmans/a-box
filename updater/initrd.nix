@@ -1,5 +1,3 @@
-# Updater initrd: init.sh as /init, the static tools and nixos-install, the DHCP lease script,
-# nix.conf for the configured caches, CA certificates and the configured firmware.
 {
   lib,
   runCommand,

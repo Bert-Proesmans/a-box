@@ -1,5 +1,3 @@
-# State that survives the ephemeral root: the machine id and the ssh host keys, symlinked from the
-# btrfs @persistent volume mounted at /persistent.
 { sources, ... }:
 {
   imports = [ (sources.preservation + "/module.nix") ];

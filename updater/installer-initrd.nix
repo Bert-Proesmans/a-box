@@ -1,6 +1,3 @@
-# Installer initrd: a shell with a-box-install, which lays out a disk with the main system's disko
-# format script and persists the updater UKI.
-#
 # The script is a plain bash file. It enters the initrd as a file, without its closure; the tools
 # it calls are listed here per disko layer, and nothing else is shipped:
 #

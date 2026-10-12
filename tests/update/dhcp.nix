@@ -1,6 +1,3 @@
-# DHCPv4 on eth1 with the cache node as router. dns: the cache node as DNS server, resolving the
-# cache name; without it the lease carries no DNS server (dnsmasq omits the option when port = 0,
-# see rfc2131.c).
 {
   dns ? true,
 }:
@@ -23,6 +20,8 @@
           host-record = "cache.a-box.test,${config.networking.primaryIPAddress}";
         }
       else
+        # Without DNS the lease carries no DNS server: dnsmasq omits the option when port = 0
+        # (rfc2131.c).
         { port = 0; }
     );
   };

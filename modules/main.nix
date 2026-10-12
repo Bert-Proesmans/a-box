@@ -1,6 +1,3 @@
-# Module imported by the main system, a volatile VM host: ephemeral root, state only through the
-# attached disk. The updater (../updater) installs the bootloader, kernels and initrds on the ESP,
-# so GRUB stays off.
 {
   imports = [
     ./disk.nix

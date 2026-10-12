@@ -1,4 +1,3 @@
-# The main system the updater installs. Generations differ only in /etc/a-box-generation.
 { vm }:
 {
   config,

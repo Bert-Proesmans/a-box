@@ -1,5 +1,3 @@
-# Names that the main system, the installer and the updater agree on: GPT partition names, the btrfs
-# subvolumes of the data partition, and the placeholder the installer swaps for the target disk.
 {
   # FAT: the bootloader, kernels and initrds, mounted at /boot.
   espLabel = "a-box-esp";

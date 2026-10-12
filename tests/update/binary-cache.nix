@@ -1,5 +1,3 @@
-# Generations 1 and 2 published with the real `a-box-stage` and `a-box-upload`: signed with the
-# test key, zstd-compressed. pointer-N is what publishing generation N writes to the pointer file.
 {
   lib,
   callPackage,

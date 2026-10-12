@@ -1,7 +1,3 @@
-# Ephemeral root: a zram ext4 device built in the initrd on every boot. Idle pages are written back
-# to the raw zram partition, so the root can outgrow RAM. /nix and /persistent come from the btrfs
-# data partition (./disk.nix) and are mounted in the initrd, before the updater's `init=<toplevel>/init`
-# runs.
 {
   config,
   lib,

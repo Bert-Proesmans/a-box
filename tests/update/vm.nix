@@ -1,4 +1,3 @@
-# The machine's VM: boots the test disk through OVMF, nothing from the host store.
 { lib, modulesPath, ... }:
 {
   # qemu-vm imports this profile, whose virtio initrd drivers would hide missing ones in main.nix.

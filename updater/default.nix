@@ -1,6 +1,3 @@
-# The updater's package set: its configuration and the artifacts built from it. Each artifact is a
-# recipe in this directory that takes the configuration and the other artifacts as inputs.
-#
 #   kernel ─┐
 #   initrd ─┴─ uki ─┬─ iso
 #                   ├─ netboot ─ netboot.githubRelease

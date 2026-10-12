@@ -1,7 +1,3 @@
-# The attached disk, managed by disko: ESP, zram writeback partition and one btrfs partition with the
-# store and the persistent volume. Partitions are found by GPT name (../layout.nix), never by disk
-# device, so the updater and the main system work on any disk. `layout` and `sources` are module
-# arguments (specialArgs), imported once by the entry point.
 {
   lib,
   layout,
