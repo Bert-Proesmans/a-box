@@ -10,9 +10,13 @@ let
     overlays = [ ];
   };
 
+  # Guest image (kernel + rootfs) run by the host's Firecracker units. The proxy CA certificate is
+  # baked in as the guest's only trust root; its key stays on the host (see modules/guest-proxy).
+  guest = pkgs.callPackage ./guest { proxyCa = ./keys/guest-proxy-ca.pem; };
+
   main = import (sources.nixpkgs + "/nixos/lib/eval-config.nix") {
     system = null;
-    specialArgs = { inherit sources layout; };
+    specialArgs = { inherit sources layout guest; };
     modules = [
       ./modules/main.nix
       ./configuration.nix
@@ -48,7 +52,7 @@ let
   };
 in
 {
-  inherit pkgs;
+  inherit pkgs guest;
 
   inherit (main.config.system.build) toplevel;
 
@@ -66,4 +70,7 @@ in
       diskoFormat
       ;
   };
+
+  # NixOS VM tests of the guest units, one per attribute (`nix-build -A tests.guests.<name>`).
+  tests.guests = import ./tests/guests { inherit pkgs guest; };
 }

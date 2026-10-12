@@ -3,6 +3,8 @@
     ./disk.nix
     ./ephemeral-root.nix
     ./strict.nix
+    ./guests.nix
+    ./guest-proxy
     ./preservation.nix
   ];
 
